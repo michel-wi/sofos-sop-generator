@@ -87,14 +87,10 @@ def bereken_coshh_klasse(h_zinnen_tekst):
     return hoogste_klasse
 
 def check_cmr_status(h_zinnen_tekst, db_cmr_val):
-    # Check database vinkje
     db_is_cmr = 'aangevinkt' in str(db_cmr_val).strip().lower() or 'true' in str(db_cmr_val).strip().lower() or '1' in str(db_cmr_val).strip().lower()
-    
-    # Automatische H-zinnen scan voor CMR en verdachte stoffen (H340, H350, H350i, H360, H341, H351, H361)
     h_zinnen = str(h_zinnen_tekst).upper()
     cmr_h_zinnen = ["H340", "H350", "H350I", "H360", "H341", "H351", "H361"]
     h_found = any(h in h_zinnen for h in cmr_h_zinnen)
-    
     return db_is_cmr or h_found
 
 def bepaal_risico_kleur(coshh, exp_klasse, is_cmr, lang="NL"):
@@ -122,17 +118,19 @@ def vind_stoffen_in_tekst(text, df):
     for stof in df['SORTEERNAAM NL'].dropna().unique():
         stof_str = str(stof).strip()
         if len(stof_str) > 2:
-            # Strikte hele-woord matching met woordgrenzen (\b) om valse positieven te voorkomen
             pattern = r'\b' + re.escape(stof_str.lower()) + r'\b'
             if re.search(pattern, text_lower):
+                gevonden_stoffen.append(stof)
+            # Extra vangnet voor Engels/Nederlands varianten zoals acetone / aceton
+            elif stof_str.lower() == "aceton" and "acetone" in text_lower:
                 gevonden_stoffen.append(stof)
                 
     return list(set(gevonden_stoffen))
 
-# --- 3. De Interface & Taalkeuze ---
-st.sidebar.header("⚙️ Instellingen / Settings")
-taal = st.sidebar.selectbox("Taal / Language", ["Nederlands", "English"])
-lang = "NL" if taal == "Nederlands" else "EN"
+# --- 3. Interface & Taalkeuze voor Rapportage ---
+st.sidebar.header("⚙️ Rapport Instellingen / Report Settings")
+taal_rapport = st.sidebar.selectbox("SOP & Interface Taal / Language", ["Nederlands", "English"])
+lang = "NL" if taal_rapport == "Nederlands" else "EN"
 
 df_stoffen = laad_chemicalien()
 if df_stoffen.empty:
@@ -148,9 +146,9 @@ else:
     tab1, tab2, tab3 = st.tabs(["📄 NLP Protocol Upload", "📝 Step 1-3: Input & Risk Assessment", "🖨️ Step 4: SOP Document"])
 
 with tab1:
-    st.header("Document of Protocol Analyseren" if lang == "NL" else "Analyze Document or Protocol")
-    upload_file = st.file_uploader("Upload PDF of TXT bestand" if lang == "NL" else "Upload PDF or TXT file", type=['pdf', 'txt'])
-    plak_tekst = st.text_area("Of plak hier direct de tekst (bijv. uit Word):" if lang == "NL" else "Or paste text directly here (e.g., from Word):", height=150)
+    st.header("Document of Protocol Analyseren (NL / EN)" if lang == "NL" else "Analyze Document or Protocol (NL / EN)")
+    upload_file = st.file_uploader("Upload PDF of TXT bestand", type=['pdf', 'txt'])
+    plak_tekst = st.text_area("Of plak hier direct de tekst (ongeacht of het NL of EN is):", height=150)
     
     geanalyseerde_tekst = ""
     if upload_file:
@@ -162,26 +160,20 @@ with tab1:
     if geanalyseerde_tekst:
         st.session_state['protocol_tekst'] = geanalyseerde_tekst 
         
-        btn_text = "Analyseer Tekst" if lang == "NL" else "Analyze Text"
-        if st.button(btn_text, type="primary"):
+        if st.button("Analyseer Tekst / Analyze Text", type="primary"):
             gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, df_stoffen)
             if gevonden:
-                if lang == "NL":
-                    st.success(f"Gevonden stoffen in database: {', '.join(gevonden)}")
-                    st.info("Alle gevonden stoffen zijn nu geselecteerd in Tab 2.")
-                else:
-                    st.success(f"Found substances in database: {', '.join(gevonden)}")
-                    st.info("All found substances are now selected in Step 2.")
+                st.success(f"Gevonden stoffen / Found substances: {', '.join(gevonden)}")
                 st.session_state['gevonden_stoffen'] = gevonden
+                st.info("Stoffen zijn geselecteerd in Tab 2. / Substances selected in Step 2.")
             else:
-                st.warning("Geen bekende stoffen gevonden." if lang == "NL" else "No known substances found.")
+                st.warning("Geen bekende stoffen gevonden. / No known substances found.")
 
 with tab2:
     st.header("Stap 1: Basisgegevens & STOP-strategie" if lang == "NL" else "Step 1: Basic Data & STOP Strategy")
     
     standaard_stoffen = st.session_state.get('gevonden_stoffen', [])
-    select_label = "Stoffen voor dit protocol:" if lang == "NL" else "Substances for this protocol:"
-    gekozen_stoffen = st.multiselect(select_label, stoffen_lijst, default=standaard_stoffen)
+    gekozen_stoffen = st.multiselect("Stoffen voor dit protocol / Substances:", stoffen_lijst, default=standaard_stoffen)
     
     beoordelingen = {}
     
@@ -191,32 +183,28 @@ with tab2:
         cas_nummer = stof_data.get('CAS-NUMMER', 'Onbekend')
         db_cmr = stof_data.get('CMR', '')
         
-        # Automatische CMR check (database vinkje + automatische H-zinnen scan)
         is_cmr = check_cmr_status(h_zinnen_db, db_cmr)
         
         st.markdown(f"### ⚙️ {stof}")
         if is_cmr:
-            msg = f"⚠️ **Let op:** Deze stof is herkend als **CMR-stof** (via database of H-zinnen H340/H350/H360)!" if lang == "NL" else f"⚠️ **Notice:** This substance is recognized as a **CMR substance** (via database or H-statements H340/H350/H360)!"
-            st.error(msg)
+            st.error("⚠️ **Let op / Notice:** Deze stof is herkend als **CMR-stof**!" if lang == "NL" else "⚠️ **Notice:** Recognized as a **CMR substance**!")
         
-        st.info(f"**CAS:** {cas_nummer} | **H-zinnen:** {h_zinnen_db}")
+        st.info(f"**CAS:** {cas_nummer} | **H-zinnen / H-statements:** {h_zinnen_db}")
         
         c1, c2 = st.columns(2)
         with c1:
-            is_vast = st.checkbox("Vaste stof" if lang == "NL" else "Solid substance", key=f"vast_{stof}")
-            dampspanning = st.number_input("Dampdruk (hPa)" if lang == "NL" else "Vapor pressure (hPa)", value=0.0, key=f"damp_{stof}")
+            is_vast = st.checkbox("Vaste stof / Solid", key=f"vast_{stof}")
+            dampspanning = st.number_input("Dampdruk / Vapor pressure (hPa)", value=0.0, key=f"damp_{stof}")
         with c2:
-            h = st.selectbox("Hoeveelheid" if lang == "NL" else "Quantity", [("Zeer kleine (max 1g/ml)" if lang=="NL" else "Very small (max 1g/ml)", 0.03), ("Kleine (max 10g/ml)" if lang=="NL" else "Small (max 10g/ml)", 0.1), ("Grote (>10g/ml)" if lang=="NL" else "Large (>10g/ml)", 1.0)], key=f"h_{stof}")
-            v = st.selectbox("Ventilatie" if lang == "NL" else "Ventilation", [("Zuurkast" if lang=="NL" else "Fume hood", 0.03), ("Op tafel" if lang=="NL" else "On table", 1)], key=f"v_{stof}")
-            d = st.selectbox("Tijdsduur" if lang == "NL" else "Duration", [("1 tot 30 min", 0.06), ("0.5 tot 2 uur" if lang=="NL" else "0.5 to 2 hours", 0.25)], key=f"d_{stof}")
-            f = st.selectbox("Frequentie" if lang == "NL" else "Frequency", [("1 keer per week" if lang=="NL" else "Once a week", 0.2), ("4 - 5 keer per week" if lang=="NL" else "4 - 5 times a week", 1)], key=f"f_{stof}")
+            h = st.selectbox("Hoeveelheid / Quantity", [("Zeer kleine (max 1g/ml)", 0.03), ("Kleine (max 10g/ml)", 0.1), ("Grote (>10g/ml)", 1.0)], key=f"h_{stof}")
+            v = st.selectbox("Ventilatie / Ventilation", [("Zuurkast / Fume hood", 0.03), ("Op tafel / On table", 1)], key=f"v_{stof}")
+            d = st.selectbox("Tijdsduur / Duration", [("1 tot 30 min", 0.06), ("0.5 tot 2 uur / hours", 0.25)], key=f"d_{stof}")
+            f = st.selectbox("Frequentie / Frequency", [("1 keer per week / Once a week", 0.2), ("4 - 5 keer per week / times a week", 1)], key=f"f_{stof}")
 
-        sub_label = "Substitutie motivatie (Verplicht bij CMR):" if lang == "NL" else "Substitution motivation (Mandatory for CMR):"
-        sub_val = "Essentieel voor onderzoek, alternatief niet mogelijk." if lang == "NL" else "Essential for research, alternative not possible."
-        substitutie = st.text_input(sub_label, value=sub_val, key=f"sub_{stof}")
-        technisch = st.text_input("Technisch:" if lang == "NL" else "Technical:", value="Werken in zuurkast." if lang=="NL" else "Work in fume hood.", key=f"tech_{stof}")
-        organisatorisch = st.text_input("Organisatorisch:" if lang == "NL" else "Organizational:", value="Beperkte tijd." if lang=="NL" else "Limited time.", key=f"org_{stof}")
-        pbm = st.text_input("PBM:" if lang == "NL" else "PPE:", value="Labjas, bril, handschoenen." if lang=="NL" else "Lab coat, goggles, gloves.", key=f"pbm_{stof}")
+        substitutie = st.text_input("Substitutie motivatie / Substitution motivation:", value="Essentieel voor onderzoek / Essential for research." if lang=="NL" else "Essential for research.", key=f"sub_{stof}")
+        technisch = st.text_input("Technisch / Technical:", value="Werken in zuurkast / Fume hood.", key=f"tech_{stof}")
+        organisatorisch = st.text_input("Organisatorisch / Organizational:", value="Beperkte tijd / Limited time.", key=f"org_{stof}")
+        pbm = st.text_input("PBM / PPE:", value="Labjas, bril, handschoenen / Lab coat, goggles, gloves.", key=f"pbm_{stof}")
         
         st.divider()
         
@@ -242,13 +230,13 @@ with tab3:
             
         st.markdown(protocol_geannoteerd)
     else:
-        st.markdown("*Geen protocol geüpload.*" if lang == "NL" else "*No protocol uploaded.*")
+        st.markdown("*Geen protocol geüpload. / No protocol uploaded.*")
     
     st.markdown("---")
     st.markdown("### 2. Chemische Risicobeoordelingen" if lang == "NL" else "### 2. Chemical Risk Assessments")
     
     if not gekozen_stoffen:
-        st.markdown("*Geen stoffen geselecteerd.*" if lang == "NL" else "*No substances selected.*")
+        st.markdown("*Geen stoffen geselecteerd. / No substances selected.*")
         
     for index, stof in enumerate(gekozen_stoffen):
         b = beoordelingen[stof]
@@ -258,22 +246,16 @@ with tab3:
         
         st.markdown(f"#### 2.{index+1} {stof} (CAS: {b['cas']})")
         if b['is_cmr']:
-            cmr_alert = "🚨 **OFFICIELE CMR-STOF (Wettelijke vervangings- en minimalisatieverplichting van toepassing)**" if lang == "NL" else "🚨 **OFFICIAL CMR SUBSTANCE (Legal substitution and minimization obligation applies)**"
-            st.error(cmr_alert)
+            st.error("🚨 **OFFICIELE CMR-STOF / OFFICIAL CMR SUBSTANCE**")
             
-        st.markdown(f"- **H-zinnen:** {b['h_zinnen']} | **Dampdruk / Vapor pressure:** {b['damp']} hPa | **COSHH Klasse / Class:** {coshh}")
+        st.markdown(f"- **H-zinnen / H-statements:** {b['h_zinnen']} | **Dampdruk / Vapor pressure:** {b['damp']} hPa | **COSHH:** {coshh}")
         st.markdown(f"- **Handeling / Handling:** {b['h_val'][0]}, {b['v_val'][0]}")
         
-        if "Groen" in risico_kleur or "Low" in risico_kleur: st.success(f"**Blootstellingsklasse {exp_klasse} | Score:** {risico_kleur}")
-        elif "Oranje" in risico_kleur or "Medium" in risico_kleur: st.warning(f"**Blootstellingsklasse {exp_klasse} | Score:** {risico_kleur}")
-        else: st.error(f"**Blootstellingsklasse {exp_klasse} | Score:** {risico_kleur}")
+        if "Groen" in risico_kleur or "Low" in risico_kleur: st.success(f"**Blootstellingsklasse / Exposure class {exp_klasse} | Score:** {risico_kleur}")
+        elif "Oranje" in risico_kleur or "Medium" in risico_kleur: st.warning(f"**Blootstellingsklasse / Exposure class {exp_klasse} | Score:** {risico_kleur}")
+        else: st.error(f"**Blootstellingsklasse / Exposure class {exp_klasse} | Score:** {risico_kleur}")
 
-        sub_txt = "Substitutie" if lang == "NL" else "Substitution"
-        tech_txt = "Technisch" if lang == "NL" else "Technical"
-        org_txt = "Organisatorisch" if lang == "NL" else "Organizational"
-        pbm_txt = "PBM" if lang == "NL" else "PPE"
-        
-        st.markdown(f"**STOP-strategie / strategy:** {sub_txt}: *{b['sub']}* | {tech_txt}: *{b['tech']}* | {org_txt}: *{b['org']}* | {pbm_txt}: *{b['pbm']}*")
+        st.markdown(f"**STOP-strategie / strategy:** Substitutie: *{b['sub']}* | Technisch: *{b['tech']}* | Organisatorisch: *{b['org']}* | PBM: *{b['pbm']}*")
         st.write("") 
 
     st.markdown("---")
@@ -285,5 +267,4 @@ with tab3:
     st.markdown(spill_nl if lang == "NL" else spill_en)
     
     st.divider()
-    cap_txt = "Druk op Ctrl+P of Cmd+P in je browser om dit complete SOP document als PDF op te slaan." if lang == "NL" else "Press Ctrl+P or Cmd+P in your browser to save this complete SOP document as a PDF."
-    st.caption(cap_txt)
+    st.caption("Druk op Ctrl+P of Cmd+P in je browser om dit complete SOP document als PDF op te slaan. / Press Ctrl+P or Cmd+P to save as PDF.")
