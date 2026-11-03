@@ -7,6 +7,17 @@ import PyPDF2
 
 st.set_page_config(page_title="SOFOS SOP Generator", layout="wide")
 
+# --- CSS om de zijbalk te verbergen bij het printen (Ctrl+P) ---
+st.markdown("""
+    <style>
+    @media print {
+        [data-testid="stSidebar"] {
+            display: none !important;
+        }
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # --- 1. Inlogscherm ---
 def check_password():
     def password_entered():
@@ -121,7 +132,6 @@ def vind_stoffen_in_tekst(text, df):
             pattern = r'\b' + re.escape(stof_str.lower()) + r'\b'
             if re.search(pattern, text_lower):
                 gevonden_stoffen.append(stof)
-            # Extra vangnet voor Engels/Nederlands varianten zoals acetone / aceton
             elif stof_str.lower() == "aceton" and "acetone" in text_lower:
                 gevonden_stoffen.append(stof)
                 
