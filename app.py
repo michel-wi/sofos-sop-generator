@@ -86,8 +86,8 @@ def bereken_coshh_klasse(h_zinnen_tekst):
         if h in klasse_B and hoogste_klasse not in ["E", "D", "C"]: hoogste_klasse = "B"
     return hoogste_klasse
 
-def bepaal_risico_kleur(coshh, exp_klasse):
-    if coshh == "E" or exp_klasse >= 3: return "Hoog (Rood)"
+def bepaal_risico_kleur(coshh, exp_klasse, is_cmr):
+    if is_cmr or coshh == "E" or exp_klasse >= 3: return "Hoog (Rood / CMR Zorgwekkend)"
     if exp_klasse == 1 and coshh in ["A", "B"]: return "Laag (Groen)"
     return "Midden (Oranje)"
 
@@ -103,18 +103,18 @@ def extract_text_from_pdf(uploaded_file):
     return text
 
 def vind_stoffen_in_tekst(text, df):
-    gevonden_cas = re.findall(r'[0-9]{2,7}-[0-9]{2}-[0-9]', text)
     gevonden_stoffen = []
+    text_lower = text.lower()
     
-    for cas in set(gevonden_cas):
-        match = df[df['CAS-NUMMER'].astype(str).str.contains(cas, na=False, regex=False)]
-        if not match.empty:
-            gevonden_stoffen.append(match.iloc[0]['SORTEERNAAM NL'])
-            
     for stof in df['SORTEERNAAM NL'].dropna().unique():
-        if len(str(stof).strip()) > 3:
-            pattern = r'\b' + re.escape(str(stof).lower()) + r'\b'
-            if re.search(pattern, text.lower()):
+        stof_str = str(stof).strip()
+        if len(stof_str) > 2:
+            stof_lower = stof_str.lower()
+            # Flexibele matching: check of de stofnaam in de tekst voorkomt
+            if stof_lower in text_lower:
+                gevonden_stoffen.append(stof)
+            # Specifieke vangnetten voor veelgebruikte synoniemen (zoals acetoN vs acetoNE)
+            elif "aceton" in stof_lower and "aceton" in text_lower:
                 gevonden_stoffen.append(stof)
                 
     return list(set(gevonden_stoffen))
@@ -150,26 +150,31 @@ with tab1:
             if gevonden:
                 st.success(f"Gevonden stoffen in database: {', '.join(gevonden)}")
                 st.session_state['gevonden_stoffen'] = gevonden
-                st.info("Alle gevonden stoffen zijn nu geselecteerd in Tab 2. Ga naar Tab 2 om verder te gaan.")
+                st.info("Alle gevonden stoffen zijn nu geselecteerd in Tab 2.")
             else:
                 st.warning("Geen bekende stoffen gevonden.")
 
 with tab2:
     st.header("Stap 1: Basisgegevens & STOP-strategie")
     
-    # Multiselect voor meerdere stoffen
     standaard_stoffen = st.session_state.get('gevonden_stoffen', [])
     gekozen_stoffen = st.multiselect("Stoffen voor dit protocol:", stoffen_lijst, default=standaard_stoffen)
     
     beoordelingen = {}
     
     for stof in gekozen_stoffen:
-        st.markdown(f"### ⚙️ Instellingen voor: {stof}")
         stof_data = df_stoffen[df_stoffen['SORTEERNAAM NL'] == stof].iloc[0]
         h_zinnen_db = stof_data.get('H-ZINNEN (TEKST)', 'Geen')
         cas_nummer = stof_data.get('CAS-NUMMER', 'Onbekend')
         
-        st.info(f"**CAS:** {cas_nummer} | **H-zinnen:** {h_zinnen_db}")
+        cmr_val = str(stof_data.get('CMR', '')).strip().lower()
+        is_cmr = 'aangevinkt' in cmr_val or 'true' in cmr_val or '1' in cmr_val
+        
+        st.markdown(f"### ⚙️ Instellingen voor: {stof}")
+        if is_cmr:
+            st.error(f"⚠️ **Let op:** Deze stof is geregistreerd als **CMR-stof** in de Sofos database!")
+        
+        st.info(f"**CAS:** {cas_nummer} | **H-zinnen:** {h_zinnen_db} | **CMR Status:** {stof_data.get('CMR', 'Onbekend')}")
         
         c1, c2 = st.columns(2)
         with c1:
@@ -181,7 +186,7 @@ with tab2:
             d = st.selectbox("Tijdsduur", [("1 tot 30 min", 0.06), ("0.5 tot 2 uur", 0.25)], key=f"d_{stof}")
             f = st.selectbox("Frequentie", [("1 keer per week", 0.2), ("4 - 5 keer per week", 1)], key=f"f_{stof}")
 
-        substitutie = st.text_input("Substitutie:", value="Essentieel voor onderzoek.", key=f"sub_{stof}")
+        substitutie = st.text_input("Substitutie motivatie (Verplicht bij CMR):", value="Essentieel voor onderzoek, alternatief niet mogelijk.", key=f"sub_{stof}")
         technisch = st.text_input("Technisch:", value="Werken in zuurkast.", key=f"tech_{stof}")
         organisatorisch = st.text_input("Organisatorisch:", value="Beperkte tijd.", key=f"org_{stof}")
         pbm = st.text_input("PBM:", value="Labjas, bril, handschoenen.", key=f"pbm_{stof}")
@@ -190,7 +195,7 @@ with tab2:
         
         beoordelingen[stof] = {
             'cas': cas_nummer, 'h_zinnen': h_zinnen_db, 'damp': dampspanning, 'vast': is_vast,
-            'h_val': h, 'v_val': v, 'd_val': d, 'f_val': f,
+            'h_val': h, 'v_val': v, 'd_val': d, 'f_val': f, 'is_cmr': is_cmr,
             'sub': substitutie, 'tech': technisch, 'org': organisatorisch, 'pbm': pbm
         }
 
@@ -202,10 +207,8 @@ with tab3:
     st.markdown("### 1. Werkprotocol / Procedure")
     if 'protocol_tekst' in st.session_state and st.session_state['protocol_tekst']:
         protocol_geannoteerd = st.session_state['protocol_tekst']
-        # Markdown regeleindes fixen
         protocol_geannoteerd = protocol_geannoteerd.replace('\n', '\n\n')
         
-        # Symbolen plaatsen bij gevonden stoffen
         for stof in gekozen_stoffen:
             patroon = re.compile(re.escape(stof), re.IGNORECASE)
             protocol_geannoteerd = patroon.sub(f"**🧪 {stof}**", protocol_geannoteerd)
@@ -224,9 +227,12 @@ with tab3:
         b = beoordelingen[stof]
         Ei, score_EM, exp_klasse = bereken_blootstellingsscore(b['damp'], b['vast'], b['h_val'][1], 1, b['v_val'][1], b['d_val'][1], b['f_val'][1])
         coshh = bereken_coshh_klasse(b['h_zinnen'])
-        risico_kleur = bepaal_risico_kleur(coshh, exp_klasse)
+        risico_kleur = bepaal_risico_kleur(coshh, exp_klasse, b['is_cmr'])
         
         st.markdown(f"#### 2.{index+1} {stof} (CAS: {b['cas']})")
+        if b['is_cmr']:
+            st.error("🚨 **OFFICIELE CMR-STOF (Wettelijke vervangings- en minimalisatieverplichting van toepassing)**")
+            
         st.markdown(f"- **H-zinnen:** {b['h_zinnen']} | **Dampdruk:** {b['damp']} hPa | **COSHH Klasse:** {coshh}")
         st.markdown(f"- **Handeling:** {b['h_val'][0]}, {b['v_val'][0]}")
         
