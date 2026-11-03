@@ -110,11 +110,9 @@ def vind_stoffen_in_tekst(text, df):
         stof_str = str(stof).strip()
         if len(stof_str) > 2:
             stof_lower = stof_str.lower()
-            # Flexibele matching: check of de stofnaam in de tekst voorkomt
-            if stof_lower in text_lower:
-                gevonden_stoffen.append(stof)
-            # Specifieke vangnetten voor veelgebruikte synoniemen (zoals acetoN vs acetoNE)
-            elif "aceton" in stof_lower and "aceton" in text_lower:
+            # Strikte hele-woord matching met woordgrenzen (\b) om valse positieven te voorkomen
+            pattern = r'\b' + re.escape(stof_lower) + r'\b'
+            if re.search(pattern, text_lower):
                 gevonden_stoffen.append(stof)
                 
     return list(set(gevonden_stoffen))
