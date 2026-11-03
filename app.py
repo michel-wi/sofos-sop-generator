@@ -2,8 +2,11 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 import re
+from datetime import datetime
+import PyPDF2
+import io
 
-st.set_page_config(page_title="Risicobeoordeling SOFOS", layout="wide")
+st.set_page_config(page_title="SOFOS SOP Generator", layout="wide")
 
 # --- 1. Inlogscherm ---
 def check_password():
@@ -14,12 +17,12 @@ def check_password():
         else:
             st.session_state["password_correct"] = False
     if "password_correct" not in st.session_state:
-        st.header("Login vereist")
+        st.header("SOFOS - Login")
         st.text_input("Gebruikersnaam", key="username")
         st.text_input("Wachtwoord", type="password", key="password", on_change=password_entered)
         return False
     elif not st.session_state["password_correct"]:
-        st.error("Incorrecte gebruikersnaam of wachtwoord.")
+        st.error("Incorrect.")
         st.text_input("Gebruikersnaam", key="username")
         st.text_input("Wachtwoord", type="password", key="password", on_change=password_entered)
         return False
@@ -28,14 +31,12 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 2. Supabase Koppeling & Paginatie ---
+# --- 2. Database & Rekenlogica ---
 @st.cache_data(ttl=600)
 def laad_chemicalien():
-    # In de Cloudomgeving gebruiken we 'secrets' voor de veiligheid. 
-    # Mocht je lokaal testen, vul hier dan tijdelijk je URL en KEY weer in.
-    SUPABASE_URL = st.secrets.get("SUPABASE_URL", "Vul_hier_URL_in_voor_lokaal_testen")
-    SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "Vul_hier_KEY_in_voor_lokaal_testen")
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    supabase: Client = create_client(url, key)
     
     all_data = []
     offset = 0
@@ -44,50 +45,38 @@ def laad_chemicalien():
         while True:
             response = supabase.table('chemicalien').select("*").range(offset, offset + limit - 1).execute()
             data = response.data
-            if not data:
-                break
+            if not data: break
             all_data.extend(data)
-            if len(data) < limit:
-                break
+            if len(data) < limit: break
             offset += limit
         return pd.DataFrame(all_data)
-    except Exception as e:
-        st.error(f"Fout bij inladen database: {e}")
+    except Exception:
         return pd.DataFrame()
 
-# --- 3. Rekenlogica (Exact volgens Excel parameters) ---
 def bereken_blootstellingsscore(dampspanning, is_vast, hoeveelheid, locatie, ventilatie, duur, frequentie):
-    # Intrinsieke emissie (Ei)
     if is_vast:
-        Ei = 0.0 # Vereenvoudigde aanname, afhankelijk van stofheid (bijv. Firm granules = 0.01)
+        Ei = 0.01 
     else:
         if dampspanning >= 800: Ei = 1.00000
         elif dampspanning >= 200: Ei = 0.80000
         elif dampspanning >= 50: Ei = 0.19000
-        else: Ei = 0.02267 # Voor vloeistoffen < 50 hPa
+        else: Ei = 0.02267 
         
-    # EM_week formule
     score_em = Ei * hoeveelheid * locatie * ventilatie * duur * frequentie
     
-    # Blootstellingsklasse bepalen
     if score_em <= 0.00002: klasse = 1
     elif score_em <= 0.002: klasse = 2
     elif score_em <= 0.2: klasse = 3
     else: klasse = 4
-        
     return Ei, score_em, klasse
 
 def bereken_coshh_klasse(h_zinnen_tekst):
-    if not h_zinnen_tekst or pd.isna(h_zinnen_tekst): 
-        return "A"
-    
+    if not h_zinnen_tekst or pd.isna(h_zinnen_tekst): return "A"
     h_zinnen = str(h_zinnen_tekst).upper()
     h_lijst = re.findall(r'H\d{3}[A-Z]*', h_zinnen)
-    
     hoogste_klasse = "A"
     
-    # COSHH Indeling
-    klasse_E = ["H340", "H350", "H350I", "H330"] # Inhalatie 1
+    klasse_E = ["H340", "H350", "H350I", "H330"] 
     klasse_D = ["H314", "H318", "H334", "H341", "H351", "H360", "H372"]
     klasse_C = ["H311", "H314", "H315", "H319", "H320", "H331", "H335", "H361", "H362", "H370", "H373"]
     klasse_B = ["H200", "H220", "H221", "H222", "H223", "H224", "H225", "H226", "H228", "H300", "H301", "H302", "H303", "H304", "H305", "H310", "H311", "H312", "H313", "H315", "H316", "H317", "H319", "H320", "H331", "H332", "H333", "H334", "H335", "H336", "H371", "H400"]
@@ -97,59 +86,154 @@ def bereken_coshh_klasse(h_zinnen_tekst):
         if h in klasse_D and hoogste_klasse not in ["E"]: hoogste_klasse = "D"
         if h in klasse_C and hoogste_klasse not in ["E", "D"]: hoogste_klasse = "C"
         if h in klasse_B and hoogste_klasse not in ["E", "D", "C"]: hoogste_klasse = "B"
-        
     return hoogste_klasse
 
-# --- 4. Applicatie Interface ---
-st.title("Risicobeoordeling SOFOS (Cloud Editie)")
+def bepaal_risico_kleur(coshh, exp_klasse):
+    if coshh == "E" or exp_klasse >= 3: return "Hoog (Rood)"
+    if exp_klasse == 1 and coshh in ["A", "B"]: return "Laag (Groen)"
+    return "Midden (Oranje)"
 
+# --- Nieuwe Module: Tekst & PDF Extractie ---
+def extract_text_from_pdf(uploaded_file):
+    text = ""
+    try:
+        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        for page in pdf_reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    except Exception as e:
+        st.error(f"Fout bij lezen PDF: {e}")
+    return text
+
+def vind_stoffen_in_tekst(text, df):
+    gevonden_cas = re.findall(r'[0-9]{2,7}-[0-9]{2}-[0-9]', text)
+    gevonden_stoffen = []
+    
+    # Zoek primair op CAS nummer
+    for cas in set(gevonden_cas):
+        match = df[df['CAS-NUMMER'].astype(str).str.contains(cas, na=False, regex=False)]
+        if not match.empty:
+            gevonden_stoffen.append(match.iloc[0]['SORTEERNAAM NL'])
+            
+    # Zoek secundair op exacte stofnaam als er geen CAS is (Basic NER)
+    if not gevonden_stoffen:
+        for stof in df['SORTEERNAAM NL'].dropna().unique():
+            if str(stof).lower() in text.lower():
+                gevonden_stoffen.append(stof)
+                
+    return list(set(gevonden_stoffen))
+
+
+# --- 3. De Interface ---
 df_stoffen = laad_chemicalien()
+if df_stoffen.empty:
+    st.error("Databasefout. Controleer je Secrets.")
+    st.stop()
 
-if not df_stoffen.empty:
-    st.success(f"{len(df_stoffen)} stoffen succesvol geladen.")
+stoffen_lijst = [s for s in df_stoffen['SORTEERNAAM NL'].unique() if pd.notnull(s)]
+stoffen_lijst.sort()
+
+tab1, tab2, tab3 = st.tabs(["📄 NLP Protocol Upload", "📝 Stap 1-3: Invoer & Risicobeoordeling", "🖨️ Stap 4: SOP Document"])
+
+# --- TAB 1: NLP Protocol Lezer ---
+with tab1:
+    st.header("Document of Protocol Analyseren")
+    st.markdown("Upload een SDS (PDF) of protocol, of plak de tekst. Het systeem zoekt automatisch naar CAS-nummers en stofnamen in de database.")
     
-    stoffen_lijst = [s for s in df_stoffen['SORTEERNAAM NL'].unique() if pd.notnull(s)]
-    stoffen_lijst.sort()
+    upload_file = st.file_uploader("Upload PDF of TXT bestand", type=['pdf', 'txt'])
+    plak_tekst = st.text_area("Of plak hier direct de tekst (bijv. uit Word):", height=150)
     
-    # Zoekbalk
-    gekozen_stof = st.selectbox("Zoek of selecteer een gevaarlijke stof:", stoffen_lijst)
+    geanalyseerde_tekst = ""
+    if upload_file:
+        if upload_file.name.endswith('.pdf'):
+            geanalyseerde_tekst = extract_text_from_pdf(upload_file)
+        elif upload_file.name.endswith('.txt'):
+            geanalyseerde_tekst = upload_file.read().decode('utf-8')
+    elif plak_tekst:
+        geanalyseerde_tekst = plak_tekst
+        
+    if geanalyseerde_tekst:
+        if st.button("Analyseer Tekst", type="primary"):
+            gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, df_stoffen)
+            if gevonden:
+                st.success(f"Gevonden stoffen in database: {', '.join(gevonden)}")
+                st.session_state['voorgeselecteerde_stof'] = gevonden[0]
+                st.info("De eerste gevonden stof is nu automatisch geselecteerd in Tab 2. Ga naar Tab 2 om verder te gaan.")
+            else:
+                st.warning("Geen bekende stoffen of CAS-nummers uit de database gevonden in deze tekst.")
+
+# --- TAB 2: Handmatige Invoer ---
+with tab2:
+    st.header("Stap 1: Basisgegevens")
+    
+    standaard_index = 0
+    if 'voorgeselecteerde_stof' in st.session_state:
+        try:
+            standaard_index = stoffen_lijst.index(st.session_state['voorgeselecteerde_stof'])
+        except ValueError:
+            pass
+            
+    gekozen_stof = st.selectbox("Zoek of selecteer een stof", stoffen_lijst, index=standaard_index)
     stof_data = df_stoffen[df_stoffen['SORTEERNAAM NL'] == gekozen_stof].iloc[0]
     
     h_zinnen_db = stof_data.get('H-ZINNEN (TEKST)', 'Geen')
-    st.info(f"**Geregistreerde H-zinnen (volgens database):** {h_zinnen_db}")
+    cas_nummer = stof_data.get('CAS-NUMMER', 'Onbekend')
+    st.info(f"**CAS:** {cas_nummer} | **H-zinnen:** {h_zinnen_db}")
     
-    st.divider()
-    
-    # Instellingen
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Stofeigenschappen")
-        is_vast = st.checkbox("Dit is een vaste stof (bijv. poeder, korrels)", value=False)
-        dampspanning = st.number_input("Dampdruk (hPa) - Raadpleeg SDS/Gestis", value=0.0, step=1.0)
-        
+        is_vast = st.checkbox("Vaste stof (poeder/korrels)", value=False)
+        dampspanning = st.number_input("Dampdruk (hPa) uit SDS", value=0.0)
     with col2:
-        st.subheader("Werkomstandigheden")
-        h = st.selectbox("Hoeveelheid", [("Zeer kleine hoeveelheden (max 1g/ml)", 0.03), ("Kleine hoeveelheden (max 10g/ml)", 0.1), ("Schoonmaken kleine objecten (max 100g/ml)", 0.3)])
-        v = st.selectbox("Ventilatie", [("Werk in een zuurkast", 0.03), ("Werk met puntafzuiging", 0.3), ("Werk op tafel", 1)])
-        d = st.selectbox("Tijdsduur", [("1 tot 30 minuten per keer", 0.06), ("0.5 tot 2 uur per keer", 0.25), ("2 tot 4 uur per keer", 0.5)])
-        f = st.selectbox("Frequentie", [("1 keer per week", 0.2), ("2 - 3 keer per week", 0.6), ("4 - 5 keer per week", 1)])
+        h = st.selectbox("Hoeveelheid", [("Zeer kleine hoeveelheden (max 1g/ml)", 0.03), ("Kleine hoeveelheden (max 10g/ml)", 0.1), ("Grote hoeveelheden (>10g/ml)", 1.0)])
+        v = st.selectbox("Ventilatie", [("Werk in een zuurkast", 0.03), ("Werk op tafel", 1)])
+        d = st.selectbox("Tijdsduur", [("1 tot 30 minuten per keer", 0.06), ("0.5 tot 2 uur per keer", 0.25)])
+        f = st.selectbox("Frequentie", [("1 keer per week", 0.2), ("4 - 5 keer per week", 1)])
 
-    if st.button("Bereken Risicoprioriteit", type="primary"):
-        # Locatie in lab = 1
-        Ei, score_EM, exp_klasse = bereken_blootstellingsscore(dampspanning, is_vast, h[1], 1, v[1], d[1], f[1])
-        coshh = bereken_coshh_klasse(h_zinnen_db)
-        
-        st.divider()
-        st.header(f"Beoordeling: {gekozen_stof}")
-        c1, c2, c3 = st.columns(3)
-        
-        c1.metric("Blootstellingsscore (EM_week)", f"{score_EM:.7f}")
-        c2.metric("Blootstellingsklasse", f"Klasse {exp_klasse}")
-        c3.metric("COSHH Gevaarklasse", coshh)
-        
-        # Test voor Isopentaan validatie: als Ei=1.0, h=0.03, loc=1, vent=0.03, duur=0.06, freq=0.2 dan EM = 0.0000108
-        if "ISOPENTAAN" in gekozen_stof.upper() and f"{score_EM:.7f}" == "0.0000108":
-            st.success("Validatie succesvol: De berekening komt exact overeen met het originele Isopentaan rekenblad (0.0000108).")
+    st.header("Stap 3: Personaliseer (STOP-strategie)")
+    st.markdown("Vul de gele velden in om te onderbouwen waarom dit veilig is.")
+    substitutie = st.text_area("Substitutie: Waarom is vervanging niet mogelijk?", value="Essentieel voor het onderzoeksproject.")
+    technisch = st.text_area("Technische maatregelen:", value="Werken in een zuurkast is verplicht.")
+    organisatorisch = st.text_area("Organisatorische maatregelen:", value=f"Tijdsduur beperkt tot {d[0]}.")
+    pbm = st.text_area("Persoonlijke bescherming (PBM):", value="Veiligheidsbril, labjas en nitril handschoenen.")
 
-else:
-    st.warning("Database kon niet worden geladen. Controleer je Supabase inloggegevens en netwerkverbinding.")
+# --- TAB 3: PDF / Document generatie ---
+with tab3:
+    Ei, score_EM, exp_klasse = bereken_blootstellingsscore(dampspanning, is_vast, h[1], 1, v[1], d[1], f[1])
+    coshh = bereken_coshh_klasse(h_zinnen_db)
+    risico_kleur = bepaal_risico_kleur(coshh, exp_klasse)
+    
+    st.markdown(f"## Standard Operating Procedure (SOP)")
+    st.markdown(f"**Document-ID:** SOP-{datetime.now().strftime('%Y-%m-%d')}-{cas_nummer}")
+    st.markdown("---")
+    
+    st.markdown(f"### 1. Chemische Risicobeoordeling: {gekozen_stof}")
+    st.markdown("Specifieke veiligheidsbeoordeling gebaseerd op de Control of Substances Hazardous to Health (COSHH) methodiek.")
+    
+    st.markdown("#### 1.1 Basisgegevens & Gevarenklasse")
+    st.markdown(f"- **CAS Nummer:** {cas_nummer}")
+    st.markdown(f"- **H-zinnen (Rubriek 2):** {h_zinnen_db}")
+    st.markdown(f"- **Dampdruk (Rubriek 9):** {dampspanning} hPa")
+    st.markdown(f"- **COSHH Gevarenklasse:** {coshh}")
+    
+    st.markdown("#### 1.2 Blootstellingsklasse & Risicoprioriteit")
+    st.markdown(f"- **Handeling:** {h[0]}, {v[0]}")
+    st.markdown(f"- **Blootstellingsklasse:** {exp_klasse} *(Score: {score_EM:.7f})*")
+    
+    if "Groen" in risico_kleur: st.success(f"**Risicomatrix Score:** {risico_kleur}")
+    elif "Oranje" in risico_kleur: st.warning(f"**Risicomatrix Score:** {risico_kleur}")
+    else: st.error(f"**Risicomatrix Score:** {risico_kleur}")
+
+    st.markdown("#### 1.3 STOP-strategie Maatregelen")
+    st.markdown(f"- **Substitutie:** {substitutie}")
+    st.markdown(f"- **Technische maatregelen:** {technisch}")
+    st.markdown(f"- **Organisatorische maatregelen:** {organisatorisch}")
+    st.markdown(f"- **Persoonlijke bescherming:** {pbm}")
+    
+    st.markdown("#### 1.4 Calamiteiten & Spill Protocol")
+    st.markdown("- **Kleine spill (< 50 ml):** Ruim direct op met behulp van de aanwezige absorptiematerialen (spill kit). Gooi het afval in de chemische afvalbak.")
+    st.markdown("- **Grote spill (> 250 ml van vluchtige stoffen):** Probeer dit niet zelf op te ruimen zonder adembescherming. Ontruim het lab, sluit de deuren en waarschuw de BHV.")
+    
+    st.divider()
+    st.caption("Druk op Ctrl+P of Cmd+P in je browser om dit protocol als PDF op te slaan.")
