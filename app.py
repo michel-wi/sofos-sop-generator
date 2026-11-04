@@ -25,14 +25,11 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Supabase configuratie - VERVANG DOOR JOUW WAARDEN in de Streamlit Secrets (of zet ze hier voor lokaal testen)
-# Zorg dat je in je streamlit secrets (settings -> secrets) de keys SUPABASE_URL en SUPABASE_KEY hebt staan
-# En ook het [passwords] blok
+# Supabase configuratie - VERVANG DOOR JOUW WAARDEN in de Streamlit Secrets
 try:
     url: str = st.secrets["SUPABASE_URL"]
     key: str = st.secrets["SUPABASE_KEY"]
 except Exception:
-    # Fallback voor lokaal testen als secrets ontbreken (NIET voor productie!)
     url: str = "JOUW_SUPABASE_URL_HIER"
     key: str = "JOUW_SUPABASE_KEY_HIER"
 
@@ -45,12 +42,10 @@ supabase: Client = init_connection()
 def check_password():
     """Geeft True terug als de gebruiker een correct wachtwoord had ingevoerd."""
     def password_entered():
-        # Kijk of de ingevoerde username in de Secrets staat
         if st.session_state["username"] in st.secrets.get("passwords", {}):
-            # Kijk of het bijbehorende wachtwoord klopt
             if st.session_state["password"] == st.secrets["passwords"][st.session_state["username"]]:
                 st.session_state["password_correct"] = True
-                del st.session_state["password"]  # verwijder wachtwoord uit tijdelijk geheugen
+                del st.session_state["password"] 
                 return
         st.session_state["password_correct"] = False
 
@@ -102,7 +97,6 @@ def vind_stoffen_in_tekst(text, df_chemicalien, extra_handmatige_dict):
     gevonden_stoffen = []
     text_lower = text.lower()
     
-    # 1. Zoek op stofnamen
     alle_stofnamen = list(df_chemicalien['SORTEERNAAM NL'].dropna().unique()) + list(extra_handmatige_dict.keys())
     for stof in alle_stofnamen:
         stof_str = str(stof).strip()
@@ -113,7 +107,6 @@ def vind_stoffen_in_tekst(text, df_chemicalien, extra_handmatige_dict):
             elif stof_str.lower() == "aceton" and "acetone" in text_lower:
                 gevonden_stoffen.append(stof)
 
-    # 2. Zoek op CAS-nummers
     cas_patroon = r'\b\d{2,7}-\d{2}-\d\b'
     gevonden_cas_in_tekst = set(re.findall(cas_patroon, text))
     
@@ -130,7 +123,7 @@ def vind_stoffen_in_tekst(text, df_chemicalien, extra_handmatige_dict):
     return list(set(gevonden_stoffen))
 
 
-# Hoofdprogramma begint hier, beschermd door wachtwoord
+# Hoofdprogramma
 if check_password():
 
     st.title("LUMC Chemische Risicobeoordeling Tool")
@@ -162,46 +155,6 @@ if check_password():
             else:
                 st.warning("Geen stoffen uit de database gevonden in de tekst.")
 
-        # Stof handmatig toevoegen
-        st.markdown("---")
-        st.subheader("Stof handmatig toevoegen / Add substance manually")
-        with st.form("add_stof_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                nieuwe_stof_naam = st.text_input("Naam (NL)")
-                nieuw_cas = st.text_input("CAS nummer")
-                nieuwe_h_zinnen = st.text_input("H-zinnen (bijv. H225,H319)")
-            with col2:
-                nieuw_gevaar = st.selectbox("COSHH Klasse", ["A", "B", "C", "D", "E"])
-                nieuw_cmr = st.checkbox("Is CMR stof?")
-                nieuwe_dampdruk = st.number_input("Dampdruk (hPa)", min_value=0.0, value=0.0, step=0.1)
-                
-            submitted = st.form_submit_button("Toevoegen / Add")
-            
-            if submitted and nieuwe_stof_naam:
-                try:
-                    # Voeg toe aan Supabase 
-                    # Zorg dat de tabel 'handmatige_chemicalien' deze kolommen heeft, en 'id' ingesteld staat op identity!
-                    nieuw_record = {
-                        "SORTEERNAAM NL": nieuwe_stof_naam,
-                        "CAS-NUMMER": nieuw_cas,
-                        "H ZINNEN": nieuwe_h_zinnen,
-                        "COSHH_KLASSE": nieuw_gevaar,
-                        "CMR": nieuw_cmr,
-                        "DAMPDRUK": nieuwe_dampdruk
-                    }
-                    supabase.table("handmatige_chemicalien").insert(nieuw_record).execute()
-                    
-                    # Voeg direct toe aan sessie
-                    st.session_state['handmatige_stoffen_data'][nieuwe_stof_naam] = nieuw_record
-                    if 'geselecteerde_stoffen' not in st.session_state:
-                         st.session_state['geselecteerde_stoffen'] = []
-                    if nieuwe_stof_naam not in st.session_state['geselecteerde_stoffen']:
-                        st.session_state['geselecteerde_stoffen'].append(nieuwe_stof_naam)
-                    st.success(f"{nieuwe_stof_naam} toegevoegd en geselecteerd!")
-                except Exception as e:
-                    st.error(f"Fout bij opslaan naar database: {e}")
-
     with tab2:
         st.header("Stap 2: Risicobeoordeling")
         
@@ -214,11 +167,53 @@ if check_password():
             default=st.session_state.get('geselecteerde_stoffen', [])
         )
 
+        # HIER IS HET HANDMATIGE FORMULIER WEER TERUGGEPLAATST IN TAB 2
+        st.markdown("---")
+        with st.expander("➕ Ontbrekende stof handmatig toevoegen / Add missing substance"):
+            with st.form("add_stof_form"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    nieuwe_stof_naam = st.text_input("Naam (NL)")
+                    nieuw_cas = st.text_input("CAS nummer")
+                    nieuwe_h_zinnen = st.text_input("H-zinnen (bijv. H225,H319)")
+                with col2:
+                    nieuw_gevaar = st.selectbox("COSHH Klasse", ["A", "B", "C", "D", "E"])
+                    nieuw_cmr = st.checkbox("Is CMR stof?")
+                    nieuwe_dampdruk = st.number_input("Dampdruk (hPa)", min_value=0.0, value=0.0, step=0.1)
+                    
+                submitted = st.form_submit_button("Toevoegen en Selecteren / Add and Select")
+                
+                if submitted and nieuwe_stof_naam:
+                    try:
+                        nieuw_record = {
+                            "SORTEERNAAM NL": nieuwe_stof_naam,
+                            "CAS-NUMMER": nieuw_cas,
+                            "H ZINNEN": nieuwe_h_zinnen,
+                            "COSHH_KLASSE": nieuw_gevaar,
+                            "CMR": nieuw_cmr,
+                            "DAMPDRUK": nieuwe_dampdruk
+                        }
+                        supabase.table("handmatige_chemicalien").insert(nieuw_record).execute()
+                        
+                        st.session_state['handmatige_stoffen_data'][nieuwe_stof_naam] = nieuw_record
+                        
+                        # Voeg toe aan geselecteerde stoffen en herlaad pagina zodat hij in de beoordelingslijst verschijnt
+                        huidige_selectie = st.session_state.get('geselecteerde_stoffen', [])
+                        if nieuwe_stof_naam not in huidige_selectie:
+                            huidige_selectie.append(nieuwe_stof_naam)
+                        st.session_state['geselecteerde_stoffen'] = huidige_selectie
+                        
+                        st.success(f"{nieuwe_stof_naam} succesvol toegevoegd!")
+                        st.rerun()  # Dit ververst Tab 2 zodat de multiselect en de expander hieronder direct updaten
+                    except Exception as e:
+                        st.error(f"Fout bij opslaan naar database: {e}")
+        
+        st.markdown("---")
+
         st.session_state['beoordelingen'] = {}
 
         for stofnaam in geselecteerde_stoffen:
             with st.expander(f"⚙️ {stofnaam}", expanded=True):
-                # Zoek gegevens (database heeft prioriteit, daarna handmatig)
                 match_db = st.session_state['df_stoffen'][st.session_state['df_stoffen']['SORTEERNAAM NL'] == stofnaam]
                 if not match_db.empty:
                     stof_row = match_db.iloc[0].to_dict()
@@ -240,7 +235,6 @@ if check_password():
                 except:
                     dampdruk = 0.0
 
-                # Logica: Alleen zuurkast als standaard als er reëel risico is
                 if is_cmr or gevaarklasse in ['D', 'E'] or dampdruk > 25.0:
                     standaard_vent_index = 0  # Optie 1 (Zuurkast)
                     standaard_tech_tekst = "Werken in zuurkast / Work in fume hood."
@@ -278,14 +272,12 @@ if check_password():
 
                 substitutie = st.text_input("Substitutie motivatie (Verplicht bij CMR):", value="Essentieel voor onderzoek, alternatief niet mogelijk.", key=f"sub_{stofnaam}")
                 
-                # Zorg dat de st.text_input value de dynamische standaard_tech_tekst gebruikt!
                 technisch = st.text_input("Technisch / Technical:", value=standaard_tech_tekst, key=f"tech_{stofnaam}")
                 
                 organisatorisch = st.text_input("Organisatorisch:", value="Beperkte tijd.", key=f"org_{stofnaam}")
                 
                 pbm = st.text_input("PBM / PPE:", value="Labjas, bril, handschoenen.", key=f"pbm_{stofnaam}")
 
-                # Opslaan in sessie voor rapport
                 st.session_state['beoordelingen'][stofnaam] = {
                     "cas": cas_nr, "h_zinnen": h_zinnen, "cmr": is_cmr, "klasse": gevaarklasse,
                     "dampdruk": damp, "hoeveelheid": hoeveelheid, "ventilatie": ventilatie,
