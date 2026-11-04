@@ -20,18 +20,23 @@ if 'handmatige_stoffen_data' not in st.session_state:
 
 def check_password():
     def password_entered():
-        if st.session_state["username"] == "admin" and st.session_state["password"] == "veilig2024":
-            st.session_state["password_correct"] = True
-            del st.session_state["password"] 
-        else:
-            st.session_state["password_correct"] = False
+        # Kijk of de ingevoerde username in de Secrets staat
+        if st.session_state["username"] in st.secrets["passwords"]:
+            # Kijk of het bijbehorende wachtwoord klopt
+            if st.session_state["password"] == st.secrets["passwords"][st.session_state["username"]]:
+                st.session_state["password_correct"] = True
+                del st.session_state["password"]  # verwijder wachtwoord uit tijdelijk geheugen voor veiligheid
+                return
+        # Als we hier komen, is de login fout
+        st.session_state["password_correct"] = False
+
     if "password_correct" not in st.session_state:
         st.header("SOFOS - Login")
         st.text_input("Gebruikersnaam", key="username")
         st.text_input("Wachtwoord", type="password", key="password", on_change=password_entered)
         return False
     elif not st.session_state["password_correct"]:
-        st.error("Incorrect.")
+        st.error("Gebruikersnaam of wachtwoord incorrect.")
         st.text_input("Gebruikersnaam", key="username")
         st.text_input("Wachtwoord", type="password", key="password", on_change=password_entered)
         return False
