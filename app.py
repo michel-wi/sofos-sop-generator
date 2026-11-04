@@ -18,6 +18,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- Sessiebeheer voor handmatige stoffen ---
+if 'handmatige_stoffen_data' not in st.session_state:
+    st.session_state['handmatige_stoffen_data'] = {}
+
 # --- 1. Inlogscherm ---
 def check_password():
     def password_entered():
@@ -59,9 +63,9 @@ def laad_chemicalien():
             all_data.extend(data)
             if len(data) < limit: break
             offset += limit
-        return pd.DataFrame(all_data)
+        return pd.DataFrame(all_data), supabase
     except Exception:
-        return pd.DataFrame()
+        return pd.DataFrame(), None
 
 def bereken_blootstellingsscore(dampspanning, is_vast, hoeveelheid, locatie, ventilatie, duur, frequentie):
     if is_vast: Ei = 0.01 
@@ -104,12 +108,12 @@ def check_cmr_status(h_zinnen_tekst, db_cmr_val):
     h_found = any(h in h_zinnen for h in cmr_h_zinnen)
     return db_is_cmr or h_found
 
-def bepaal_risico_kleur(coshh, exp_klasse, is_cmr, lang="NL"):
+def bepaal_risico_kleur(coshh, exp_klasse, is_cmr):
     if is_cmr or coshh == "E" or exp_klasse >= 3:
-        return "Hoog (Rood / CMR Zorgwekkend)" if lang == "NL" else "High (Red / CMR Concern)"
+        return "Hoog (Rood / High - Red / CMR Zorgwekkend)"
     if exp_klasse == 1 and coshh in ["A", "B"]:
-        return "Laag (Groen)" if lang == "NL" else "Low (Green)"
-    return "Midden (Oranje)" if lang == "NL" else "Medium (Orange)"
+        return "Laag (Groen / Low - Green)"
+    return "Midden (Oranje / Medium - Orange)"
 
 def extract_text_from_pdf(uploaded_file):
     text = ""
@@ -137,28 +141,22 @@ def vind_stoffen_in_tekst(text, df):
                 
     return list(set(gevonden_stoffen))
 
-# --- 3. Interface & Taalkeuze voor Rapportage ---
-st.sidebar.header("⚙️ Rapport Instellingen / Report Settings")
-taal_rapport = st.sidebar.selectbox("SOP & Interface Taal / Language", ["Nederlands", "English"])
-lang = "NL" if taal_rapport == "Nederlands" else "EN"
-
-df_stoffen = laad_chemicalien()
+# --- 3. Interface ---
+df_stoffen, supabase_client = laad_chemicalien()
 if df_stoffen.empty:
     st.error("Databasefout. Controleer je Secrets.")
     st.stop()
 
-stoffen_lijst = [s for s in df_stoffen['SORTEERNAAM NL'].unique() if pd.notnull(s)]
-stoffen_lijst.sort()
+db_stoffen_lijst = [s for s in df_stoffen['SORTEERNAAM NL'].unique() if pd.notnull(s)]
+# Voeg de handmatig ingevoerde stoffen toe aan de dropdown lijst
+complete_stoffen_lijst = sorted(db_stoffen_lijst + list(st.session_state['handmatige_stoffen_data'].keys()))
 
-if lang == "NL":
-    tab1, tab2, tab3 = st.tabs(["📄 NLP Protocol Upload", "📝 Stap 1-3: Invoer & Risicobeoordeling", "🖨️ Stap 4: SOP Document"])
-else:
-    tab1, tab2, tab3 = st.tabs(["📄 NLP Protocol Upload", "📝 Step 1-3: Input & Risk Assessment", "🖨️ Step 4: SOP Document"])
+tab1, tab2, tab3 = st.tabs(["📄 NLP Protocol Upload", "📝 Stap 1-3: Invoer / Input", "🖨️ Stap 4: SOP Document"])
 
 with tab1:
-    st.header("Document of Protocol Analyseren (NL / EN)" if lang == "NL" else "Analyze Document or Protocol (NL / EN)")
-    upload_file = st.file_uploader("Upload PDF of TXT bestand", type=['pdf', 'txt'])
-    plak_tekst = st.text_area("Of plak hier direct de tekst (ongeacht of het NL of EN is):", height=150)
+    st.header("Document of Protocol Analyseren / Analyze Document")
+    upload_file = st.file_uploader("Upload PDF of TXT bestand / Upload file", type=['pdf', 'txt'])
+    plak_tekst = st.text_area("Of plak hier direct de tekst (NL / EN):", height=150)
     
     geanalyseerde_tekst = ""
     if upload_file:
@@ -175,20 +173,57 @@ with tab1:
             if gevonden:
                 st.success(f"Gevonden stoffen / Found substances: {', '.join(gevonden)}")
                 st.session_state['gevonden_stoffen'] = gevonden
-                st.info("Stoffen zijn geselecteerd in Tab 2. / Substances selected in Step 2.")
+                st.info("Stoffen zijn geselecteerd in Stap 2. / Substances selected in Step 2.")
             else:
                 st.warning("Geen bekende stoffen gevonden. / No known substances found.")
 
 with tab2:
-    st.header("Stap 1: Basisgegevens & STOP-strategie" if lang == "NL" else "Step 1: Basic Data & STOP Strategy")
+    st.header("Stap 1-3: Basisgegevens & STOP-strategie / Basic Data & STOP Strategy")
     
+    # --- HANDMATIGE STOF TOEVOEGEN ---
+    with st.expander("➕ Stof ontbreekt? Voeg handmatig toe / Substance missing? Add manually"):
+        st.info("Let op: Raadpleeg altijd het SDS van de leverancier. Als de stof vaker wordt gebruikt, mail dan de arbodienst om deze centraal toe te voegen.")
+        with st.form("handmatige_stof_form"):
+            new_naam = st.text_input("Stofnaam / Substance name")
+            new_cas = st.text_input("CAS-nummer / CAS number")
+            new_h = st.text_input("H-zinnen (bijv. H225, H319) / H-statements")
+            new_cmr = st.checkbox("Is dit een CMR-stof? / Is this a CMR substance?")
+            
+            if st.form_submit_button("Toevoegen aan database / Add to database"):
+                if new_naam:
+                    cmr_status = "Aangevinkt" if new_cmr else "Uitgevinkt"
+                    st.session_state['handmatige_stoffen_data'][new_naam] = {
+                        'CAS-NUMMER': new_cas, 'H-ZINNEN (TEKST)': new_h, 'CMR': cmr_status, 'is_handmatig': True
+                    }
+                    
+                    if supabase_client:
+                        try:
+                            # Schrijf weg naar de nieuwe tabel in Supabase
+                            supabase_client.table('handmatige_chemicalien').insert({
+                                "SORTEERNAAM NL": new_naam, "CAS-NUMMER": new_cas, 
+                                "H-ZINNEN (TEKST)": new_h, "CMR": cmr_status
+                            }).execute()
+                            st.success(f"{new_naam} is succesvol opgeslagen in de database!")
+                        except Exception as e:
+                            st.warning("Let op: Tabel 'handmatige_chemicalien' bestaat nog niet in Supabase. De stof is voor deze sessie wel tijdelijk toegevoegd.")
+                    
+                    st.rerun()
+
+    # --- KIES STOFFEN ---
     standaard_stoffen = st.session_state.get('gevonden_stoffen', [])
-    gekozen_stoffen = st.multiselect("Stoffen voor dit protocol / Substances:", stoffen_lijst, default=standaard_stoffen)
+    gekozen_stoffen = st.multiselect("Stoffen voor dit protocol / Substances for this protocol:", complete_stoffen_lijst, default=[s for s in standaard_stoffen if s in complete_stoffen_lijst])
     
     beoordelingen = {}
     
     for stof in gekozen_stoffen:
-        stof_data = df_stoffen[df_stoffen['SORTEERNAAM NL'] == stof].iloc[0]
+        # Haal data uit de database of uit de handmatige sessie
+        if stof in st.session_state['handmatige_stoffen_data']:
+            stof_data = st.session_state['handmatige_stoffen_data'][stof]
+            is_handmatig = True
+        else:
+            stof_data = df_stoffen[df_stoffen['SORTEERNAAM NL'] == stof].iloc[0]
+            is_handmatig = False
+            
         h_zinnen_db = stof_data.get('H-ZINNEN (TEKST)', 'Geen')
         cas_nummer = stof_data.get('CAS-NUMMER', 'Onbekend')
         db_cmr = stof_data.get('CMR', '')
@@ -196,23 +231,26 @@ with tab2:
         is_cmr = check_cmr_status(h_zinnen_db, db_cmr)
         
         st.markdown(f"### ⚙️ {stof}")
+        if is_handmatig:
+            st.caption("*(Handmatig toegevoegde stof / Manually added substance)*")
+            
         if is_cmr:
-            st.error("⚠️ **Let op / Notice:** Deze stof is herkend als **CMR-stof**!" if lang == "NL" else "⚠️ **Notice:** Recognized as a **CMR substance**!")
+            st.error("⚠️ **Let op / Notice:** Deze stof is herkend als **CMR-stof / CMR Substance**!")
         
         st.info(f"**CAS:** {cas_nummer} | **H-zinnen / H-statements:** {h_zinnen_db}")
         
         c1, c2 = st.columns(2)
         with c1:
-            is_vast = st.checkbox("Vaste stof / Solid", key=f"vast_{stof}")
+            is_vast = st.checkbox("Vaste stof / Solid substance", key=f"vast_{stof}")
             dampspanning = st.number_input("Dampdruk / Vapor pressure (hPa)", value=0.0, key=f"damp_{stof}")
         with c2:
-            h = st.selectbox("Hoeveelheid / Quantity", [("Zeer kleine (max 1g/ml)", 0.03), ("Kleine (max 10g/ml)", 0.1), ("Grote (>10g/ml)", 1.0)], key=f"h_{stof}")
+            h = st.selectbox("Hoeveelheid / Quantity", [("Zeer kleine / Very small (max 1g/ml)", 0.03), ("Kleine / Small (max 10g/ml)", 0.1), ("Grote / Large (>10g/ml)", 1.0)], key=f"h_{stof}")
             v = st.selectbox("Ventilatie / Ventilation", [("Zuurkast / Fume hood", 0.03), ("Op tafel / On table", 1)], key=f"v_{stof}")
-            d = st.selectbox("Tijdsduur / Duration", [("1 tot 30 min", 0.06), ("0.5 tot 2 uur / hours", 0.25)], key=f"d_{stof}")
-            f = st.selectbox("Frequentie / Frequency", [("1 keer per week / Once a week", 0.2), ("4 - 5 keer per week / times a week", 1)], key=f"f_{stof}")
+            d = st.selectbox("Tijdsduur / Duration", [("1 tot 30 min / 1 to 30 min", 0.06), ("0.5 tot 2 uur / 0.5 to 2 hours", 0.25)], key=f"d_{stof}")
+            f = st.selectbox("Frequentie / Frequency", [("1 keer per week / Once a week", 0.2), ("4 - 5 keer per week / 4 - 5 times a week", 1)], key=f"f_{stof}")
 
-        substitutie = st.text_input("Substitutie motivatie / Substitution motivation:", value="Essentieel voor onderzoek / Essential for research." if lang=="NL" else "Essential for research.", key=f"sub_{stof}")
-        technisch = st.text_input("Technisch / Technical:", value="Werken in zuurkast / Fume hood.", key=f"tech_{stof}")
+        substitutie = st.text_input("Substitutie motivatie (Verplicht bij CMR) / Substitution motivation (Mandatory for CMR):", value="Essentieel voor onderzoek, alternatief niet mogelijk / Essential for research, alternative not possible.", key=f"sub_{stof}")
+        technisch = st.text_input("Technisch / Technical:", value="Werken in zuurkast / Work in fume hood.", key=f"tech_{stof}")
         organisatorisch = st.text_input("Organisatorisch / Organizational:", value="Beperkte tijd / Limited time.", key=f"org_{stof}")
         pbm = st.text_input("PBM / PPE:", value="Labjas, bril, handschoenen / Lab coat, goggles, gloves.", key=f"pbm_{stof}")
         
@@ -221,7 +259,8 @@ with tab2:
         beoordelingen[stof] = {
             'cas': cas_nummer, 'h_zinnen': h_zinnen_db, 'damp': dampspanning, 'vast': is_vast,
             'h_val': h, 'v_val': v, 'd_val': d, 'f_val': f, 'is_cmr': is_cmr,
-            'sub': substitutie, 'tech': technisch, 'org': organisatorisch, 'pbm': pbm
+            'sub': substitutie, 'tech': technisch, 'org': organisatorisch, 'pbm': pbm,
+            'is_handmatig': is_handmatig
         }
 
 with tab3:
@@ -229,7 +268,7 @@ with tab3:
     st.markdown(f"**Document-ID:** SOP-{datetime.now().strftime('%Y-%m-%d')}")
     st.markdown("---")
     
-    st.markdown("### 1. Werkprotocol / Procedure" if lang == "NL" else "### 1. Work Protocol / Procedure")
+    st.markdown("### 1. Werkprotocol / Work Protocol")
     if 'protocol_tekst' in st.session_state and st.session_state['protocol_tekst']:
         protocol_geannoteerd = st.session_state['protocol_tekst']
         protocol_geannoteerd = protocol_geannoteerd.replace('\n', '\n\n')
@@ -243,7 +282,7 @@ with tab3:
         st.markdown("*Geen protocol geüpload. / No protocol uploaded.*")
     
     st.markdown("---")
-    st.markdown("### 2. Chemische Risicobeoordelingen" if lang == "NL" else "### 2. Chemical Risk Assessments")
+    st.markdown("### 2. Chemische Risicobeoordelingen / Chemical Risk Assessments")
     
     if not gekozen_stoffen:
         st.markdown("*Geen stoffen geselecteerd. / No substances selected.*")
@@ -252,11 +291,16 @@ with tab3:
         b = beoordelingen[stof]
         Ei, score_EM, exp_klasse = bereken_blootstellingsscore(b['damp'], b['vast'], b['h_val'][1], 1, b['v_val'][1], b['d_val'][1], b['f_val'][1])
         coshh = bereken_coshh_klasse(b['h_zinnen'])
-        risico_kleur = bepaal_risico_kleur(coshh, exp_klasse, b['is_cmr'], lang)
+        risico_kleur = bepaal_risico_kleur(coshh, exp_klasse, b['is_cmr'])
         
         st.markdown(f"#### 2.{index+1} {stof} (CAS: {b['cas']})")
+        
+        # Geef officieel lab-advies in de SOP bij handmatige invoer
+        if b.get('is_handmatig'):
+            st.info("ℹ️ **Advies / Notice:** Deze stof is handmatig toegevoegd. Raadpleeg altijd het Veiligheidsinformatieblad (SDS) van de leverancier. Indien deze stof veel gebruikt wordt, stuur dan een e-mail naar *Afdeling Veiligheid en Milieu@Lumc.nl* om deze aan de centrale databank toe te voegen.")
+            
         if b['is_cmr']:
-            st.error("🚨 **OFFICIELE CMR-STOF / OFFICIAL CMR SUBSTANCE**")
+            st.error("🚨 **OFFICIELE CMR-STOF / OFFICIAL CMR SUBSTANCE (Wettelijke vervangingsverplichting / Legal substitution obligation)**")
             
         st.markdown(f"- **H-zinnen / H-statements:** {b['h_zinnen']} | **Dampdruk / Vapor pressure:** {b['damp']} hPa | **COSHH:** {coshh}")
         st.markdown(f"- **Handeling / Handling:** {b['h_val'][0]}, {b['v_val'][0]}")
@@ -265,16 +309,14 @@ with tab3:
         elif "Oranje" in risico_kleur or "Medium" in risico_kleur: st.warning(f"**Blootstellingsklasse / Exposure class {exp_klasse} | Score:** {risico_kleur}")
         else: st.error(f"**Blootstellingsklasse / Exposure class {exp_klasse} | Score:** {risico_kleur}")
 
-        st.markdown(f"**STOP-strategie / strategy:** Substitutie: *{b['sub']}* | Technisch: *{b['tech']}* | Organisatorisch: *{b['org']}* | PBM: *{b['pbm']}*")
+        st.markdown(f"**STOP-strategie / strategy:** Substitutie / Substitution: *{b['sub']}* | Technisch / Technical: *{b['tech']}* | Organisatorisch / Organizational: *{b['org']}* | PBM / PPE: *{b['pbm']}*")
         st.write("") 
 
     st.markdown("---")
-    st.markdown("### 3. Calamiteiten & Spill Protocol" if lang == "NL" else "### 3. Emergencies & Spill Protocol")
-    spill_nl = """- **Kleine spill (< 50 ml):** Ruim direct op met absorptiematerialen (spill kit). Gooi afval in chemische afvalbak.
-- **Grote spill (> 250 ml vluchtige stoffen):** Ruim dit niet zelf op zonder adembescherming. Ontruim het lab, sluit deuren, waarschuw BHV."""
-    spill_en = """- **Small spill (< 50 ml):** Clean up immediately using absorption materials (spill kit). Dispose of waste in chemical waste bin.
-- **Large spill (> 250 ml volatile substances):** Do not clean this up yourself without respiratory protection. Evacuate the lab, close doors, alert emergency response (BHV)."""
-    st.markdown(spill_nl if lang == "NL" else spill_en)
+    st.markdown("### 3. Calamiteiten & Spill Protocol / Emergencies & Spill Protocol")
+    spill_bilingual = """- **Kleine spill / Small spill (< 50 ml):** Ruim direct op met absorptiematerialen (spill kit). Gooi afval in chemische afvalbak. / Clean up immediately using absorption materials (spill kit). Dispose of waste in chemical waste bin.
+- **Grote spill / Large spill (> 250 ml vluchtige stoffen / volatile substances):** Ruim dit niet zelf op zonder adembescherming. Ontruim het lab, sluit deuren, waarschuw BHV. / Do not clean this up yourself without respiratory protection. Evacuate the lab, close doors, alert emergency response (BHV)."""
+    st.markdown(spill_bilingual)
     
     st.divider()
-    st.caption("Druk op Ctrl+P of Cmd+P in je browser om dit complete SOP document als PDF op te slaan. / Press Ctrl+P or Cmd+P to save as PDF.")
+    st.caption("Druk op Ctrl+P of Cmd+P in je browser om dit complete SOP document als PDF op te slaan. / Press Ctrl+P or Cmd+P in your browser to save this complete SOP document as a PDF.")
