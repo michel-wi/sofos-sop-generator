@@ -162,33 +162,42 @@ def extract_text_from_pdf(uploaded_file):
     except Exception: pass
     return text
 
-def vind_stoffen_in_tekst(text, df_chemicalien):
+def vind_stoffen_in_tekst(text, df_chemicalien, extra_handmatige_dict=None):
+    if extra_handmatige_dict is None:
+        extra_handmatige_dict = {}
+        
     gevonden_stoffen = []
     text_lower = text.lower()
     
-    # 1. Scannen op stofnaam
-    for _, row in df_chemicalien.iterrows():
-        stof = row.get('SORTEERNAAM NL')
-        if pd.notnull(stof):
-            stof_str = str(stof).strip()
-            if len(stof_str) > 2:
-                pattern = r'\b' + re.escape(stof_str.lower()) + r'\b'
-                if re.search(pattern, text_lower):
-                    gevonden_stoffen.append(stof_str)
-                elif stof_str.lower() == "aceton" and "acetone" in text_lower:
-                    gevonden_stoffen.append(stof_str)
+    # 1. Zoek op stofnamen uit zowel de reguliere als handmatige database
+    alle_stofnamen = list(df_chemicalien['SORTEERNAAM NL'].dropna().unique()) + list(extra_handmatige_dict.keys())
+    for stof in alle_stofnamen:
+        stof_str = str(stof).strip()
+        if len(stof_str) > 2:
+            pattern = r'\b' + re.escape(stof_str.lower()) + r'\b'
+            if re.search(pattern, text_lower):
+                gevonden_stoffen.append(stof_str)
+            elif stof_str.lower() == "aceton" and "acetone" in text_lower:
+                gevonden_stoffen.append(stof_str)
 
-    # 2. Scannen op CAS-nummer
+    # 2. Zoek op CAS-nummers in de tekst en koppel direct aan de juiste stofnaam
     cas_patroon = r'\b\d{2,7}-\d{2}-\d\b'
     gevonden_cas_in_tekst = set(re.findall(cas_patroon, text))
     
-    if gevonden_cas_in_tekst and 'CAS-NUMMER' in df_chemicalien.columns:
+    if gevonden_cas_in_tekst:
         for cas in gevonden_cas_in_tekst:
+            # Controleer in de reguliere dataframe
             match_db = df_chemicalien[df_chemicalien['CAS-NUMMER'].astype(str).str.strip() == cas]
-            for _, row in match_db.iterrows():
-                stof_naam = row.get('SORTEERNAAM NL')
-                if pd.notnull(stof_naam):
-                    gevonden_stoffen.append(str(stof_naam).strip())
+            if not match_db.empty:
+                for _, row in match_db.iterrows():
+                    stof_naam = row.get('SORTEERNAAM NL')
+                    if pd.notnull(stof_naam):
+                        gevonden_stoffen.append(str(stof_naam).strip())
+            
+            # Controleer in het handmatige woordenboek
+            for naam, data in extra_handmatige_dict.items():
+                if str(data.get('CAS-NUMMER', '')).strip() == cas:
+                    gevonden_stoffen.append(naam)
                     
     return list(set(gevonden_stoffen))
 
@@ -231,7 +240,7 @@ with tab1:
         st.session_state['protocol_tekst'] = geanalyseerde_tekst 
         if st.button("Analyseer Tekst / Analyze Text", type="primary"):
             # Doorgegeven van de volledige dataframe zodat CAS-nummers uitgelezen kunnen worden
-            gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, df_stoffen)
+            gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, df_stoffen, st.session_state['handmatige_stoffen_data'])
             if gevonden:
                 st.success(f"Gevonden stoffen / Found substances: {', '.join(gevonden)}")
                 st.session_state['gevonden_stoffen'] = gevonden
