@@ -246,10 +246,42 @@ with tab2:
             st.caption("Controleer de dampdruk in het SDS rubriek 9 of GESTIS. (Check SDS section 9 for exact vapor pressure).")
             dampspanning = st.number_input("Dampdruk / Vapor pressure (hPa)", value=float(geschatte_damp), key=f"damp_{stof}")
         with c2:
-            h = st.selectbox("Hoeveelheid / Quantity", [("Zeer kleine / Very small (max 1g/ml)", 0.03), ("Kleine / Small (max 10g/ml)", 0.1), ("Grote / Large (>10g/ml)", 1.0)], key=f"h_{stof}")
-            v = st.selectbox("Ventilatie / Ventilation", [("Zuurkast / Fume hood", 0.03), ("Op tafel / On table", 1)], key=f"v_{stof}")
-            d = st.selectbox("Tijdsduur / Duration", [("1 tot 30 min / 1 to 30 min", 0.06), ("0.5 tot 2 uur / 0.5 to 2 hours", 0.25)], key=f"d_{stof}")
-            f = st.selectbox("Frequentie / Frequency", [("1 keer per week / Once a week", 0.2), ("4 - 5 keer per week / 4 - 5 times a week", 1)], key=f"f_{stof}")
+            # 1. Hoeveelheid en soort handeling (Quantity / action)
+            h = st.selectbox("Hoeveelheid / Quantity", [
+                ("1. Closed system / Gesloten systeem", 0.0),
+                ("2. Very small quantities (1 g or ml), pipetting, weighing / Zeer klein, pipetteren, wegen", 0.03),
+                ("3. Small quantities (10 g or ml), pipette, weigh / Klein (max 10 g/ml), pipetteren, wegen", 0.1),
+                ("4. Cleaning of small objects / Reinigen kleine objecten (max 100 g/ml)", 0.3),
+                ("5. Stir, pour over, immerse / Roeren, overgieten, dompelen (max 1 kg/liter)", 1.0),
+                ("6. Application, removal, coating, brushing / Aanbrengen, coaten (meer dan 1 kg/liter)", 3.0),
+                ("7. Frothing, mixing / Schuimen, mengen (max 1 kg/liter)", 3.0),
+                ("8. Mist / Nevel (meer dan 1 kg/liter)", 10.0)
+            ], index=1, key=f"h_{stof}")
+            
+            # 2. Lokale controle / Ventilatie (Local control measures)
+            v = st.selectbox("Ventilatie / Ventilation", [
+                ("1. Work in a fume hood / Werk in een zuurkast", 0.03),
+                ("2. Work with point extraction / Werk met puntafzuiging", 0.3),
+                ("3. Work on the table / Werk op tafel", 1.0)
+            ], index=0, key=f"v_{stof}")
+            
+            # 3. Duur van handeling (Duration action)
+            d = st.selectbox("Tijdsduur / Duration", [
+                ("a. 1 to 30 minutes at a time / 1 tot 30 minuten per keer", 0.06),
+                ("b. 0.5 to 2 hours at a time / 0.5 tot 2 uur per keer", 0.25),
+                ("c. 2 to 4 hours at a time / 2 tot 4 uur per keer", 0.5),
+                ("d. 4 to 8 hours at a time / 4 tot 8 uur per keer", 1.0)
+            ], index=0, key=f"d_{stof}")
+            
+            # 4. Frequentie (Frequency of action)
+            f = st.selectbox("Frequentie / Frequency", [
+                ("a. Once a year / Een keer per jaar", 0.01),
+                ("b. Once a month / Een keer per maand", 0.05),
+                ("c. Once every 2 weeks / Een keer per twee weken", 0.1),
+                ("d. Once a week / Een keer per week", 0.2),
+                ("e. 2 - 3 times a week / 2 tot 3 keer per week", 0.6),
+                ("f. 4 - 5 times a week / 4 tot 5 keer per week", 1.0)
+            ], index=3, key=f"f_{stof}")
 
         substitutie = st.text_input("Substitutie motivatie (Verplicht bij CMR) / Substitution motivation (Mandatory for CMR):", value="Essentieel voor onderzoek, alternatief niet mogelijk / Essential for research, alternative not possible.", key=f"sub_{stof}")
         technisch = st.text_input("Technisch / Technical:", value="Werken in zuurkast / Work in fume hood.", key=f"tech_{stof}")
