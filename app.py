@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 import PyPDF2
 
-st.set_page_config(page_title="LUMC Chemische Risicotool", layout="wide")
+st.set_page_config(page_title="wi SOP creator", layout="wide")
 
 st.markdown("""
     <style>
@@ -126,7 +126,7 @@ def vind_stoffen_in_tekst(text, df_chemicalien, extra_handmatige_dict):
 # Hoofdprogramma
 if check_password():
 
-    st.title("LUMC Chemische Risicobeoordeling Tool")
+    st.title("wi SOP")
 
     tab1, tab2, tab3 = st.tabs(["1. Protocol Analyse", "2. Beoordeling", "3. PDF Rapport"])
 
