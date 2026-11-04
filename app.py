@@ -179,27 +179,36 @@ def vind_stoffen_in_tekst(text, df_chemicalien, extra_handmatige_dict=None):
             elif stof_str.lower() == "aceton" and "acetone" in text_lower:
                 gevonden_stoffen.append(stof_str)
 
-    # 2. Zoek op CAS-nummers in de tekst (robuuste matching)
+    # 2. Zoek dynamisch naar de juiste CAS-kolom in Supabase (ongeacht hoofdletters of streepjes)
+    cas_col = None
+    for col in df_chemicalien.columns:
+        if 'cas' in col.lower():
+            cas_col = col
+            break
+
+    # 3. Zoek op CAS-nummers in de tekst
     cas_patroon = r'\b\d{2,7}-\d{2}-\d\b'
     gevonden_cas_in_tekst = set(re.findall(cas_patroon, text))
     
     if gevonden_cas_in_tekst:
         for cas in gevonden_cas_in_tekst:
             cas_clean = cas.strip()
-            # Zoek in de Supabase dataframe
-            if 'CAS-NUMMER' in df_chemicalien.columns:
+            
+            # Zoek in de Supabase dataframe via de dynamisch gevonden kolom
+            if cas_col:
                 for _, row in df_chemicalien.iterrows():
-                    db_cas = str(row.get('CAS-NUMMER', '')).strip()
-                    if db_cas == cas_clean:
+                    db_val = row.get(cas_col)
+                    if pd.notnull(db_val) and str(db_val).strip() == cas_clean:
                         stof_naam = row.get('SORTEERNAAM NL')
                         if pd.notnull(stof_naam):
                             gevonden_stoffen.append(str(stof_naam).strip())
             
             # Zoek in het handmatige woordenboek
             for naam, data in extra_handmatige_dict.items():
-                if str(data.get('CAS-NUMMER', '')).strip() == cas_clean:
-                    gevonden_stoffen.append(naam)
-                    
+                for k, v in data.items():
+                    if 'cas' in k.lower() and str(v).strip() == cas_clean:
+                        gevonden_stoffen.append(naam)
+                        
     return list(set(gevonden_stoffen))
 
 def schat_standaard_dampdruk(stofnaam, h_zinnen):
