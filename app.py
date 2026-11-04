@@ -53,7 +53,6 @@ supabase_client = init_connection()
 @st.cache_data(ttl=60)
 def laad_chemicalien(_client):
     all_data = []
-    
     offset = 0
     limit = 1000
     try:
@@ -169,7 +168,7 @@ def vind_stoffen_in_tekst(text, df_chemicalien, extra_handmatige_dict=None):
     gevonden_stoffen = []
     text_lower = text.lower()
     
-    # 1. Zoek op stofnamen uit zowel de reguliere als handmatige database
+    # 1. Zoek op stofnamen (zowel regulier als handmatig)
     alle_stofnamen = list(df_chemicalien['SORTEERNAAM NL'].dropna().unique()) + list(extra_handmatige_dict.keys())
     for stof in alle_stofnamen:
         stof_str = str(stof).strip()
@@ -180,23 +179,25 @@ def vind_stoffen_in_tekst(text, df_chemicalien, extra_handmatige_dict=None):
             elif stof_str.lower() == "aceton" and "acetone" in text_lower:
                 gevonden_stoffen.append(stof_str)
 
-    # 2. Zoek op CAS-nummers in de tekst en koppel direct aan de juiste stofnaam
+    # 2. Zoek op CAS-nummers in de tekst (robuuste matching)
     cas_patroon = r'\b\d{2,7}-\d{2}-\d\b'
     gevonden_cas_in_tekst = set(re.findall(cas_patroon, text))
     
     if gevonden_cas_in_tekst:
         for cas in gevonden_cas_in_tekst:
-            # Controleer in de reguliere dataframe
-            match_db = df_chemicalien[df_chemicalien['CAS-NUMMER'].astype(str).str.strip() == cas]
-            if not match_db.empty:
-                for _, row in match_db.iterrows():
-                    stof_naam = row.get('SORTEERNAAM NL')
-                    if pd.notnull(stof_naam):
-                        gevonden_stoffen.append(str(stof_naam).strip())
+            cas_clean = cas.strip()
+            # Zoek in de Supabase dataframe
+            if 'CAS-NUMMER' in df_chemicalien.columns:
+                for _, row in df_chemicalien.iterrows():
+                    db_cas = str(row.get('CAS-NUMMER', '')).strip()
+                    if db_cas == cas_clean:
+                        stof_naam = row.get('SORTEERNAAM NL')
+                        if pd.notnull(stof_naam):
+                            gevonden_stoffen.append(str(stof_naam).strip())
             
-            # Controleer in het handmatige woordenboek
+            # Zoek in het handmatige woordenboek
             for naam, data in extra_handmatige_dict.items():
-                if str(data.get('CAS-NUMMER', '')).strip() == cas:
+                if str(data.get('CAS-NUMMER', '')).strip() == cas_clean:
                     gevonden_stoffen.append(naam)
                     
     return list(set(gevonden_stoffen))
@@ -239,7 +240,6 @@ with tab1:
     if geanalyseerde_tekst:
         st.session_state['protocol_tekst'] = geanalyseerde_tekst 
         if st.button("Analyseer Tekst / Analyze Text", type="primary"):
-            # Doorgegeven van de volledige dataframe zodat CAS-nummers uitgelezen kunnen worden
             gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, df_stoffen, st.session_state['handmatige_stoffen_data'])
             if gevonden:
                 st.success(f"Gevonden stoffen / Found substances: {', '.join(gevonden)}")
@@ -304,10 +304,7 @@ with tab2:
                 stof_data = {}
                 is_handmatig = False
             
-        h_zinnen_db = stof_data.get('H-ZINNEN (TEKST', 'Geen') if hasattr(stof_data, 'get') else 'Geen'
-        if not h_zinnen_db or h_zinnen_db == 'Geen':
-            h_zinnen_db = stof_data.get('H-ZINNEN (TEKST)', 'Geen') if hasattr(stof_data, 'get') else 'Geen'
-            
+        h_zinnen_db = stof_data.get('H-ZINNEN (TEKST)', 'Geen') if hasattr(stof_data, 'get') else 'Geen'
         cas_nummer = stof_data.get('CAS-NUMMER', 'Onbekend') if hasattr(stof_data, 'get') else 'Onbekend'
         db_cmr = stof_data.get('CMR', '') if hasattr(stof_data, 'get') else ''
         
