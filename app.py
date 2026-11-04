@@ -53,6 +53,7 @@ supabase_client = init_connection()
 @st.cache_data(ttl=60)
 def laad_chemicalien(_client):
     all_data = []
+    
     offset = 0
     limit = 1000
     try:
@@ -132,25 +133,23 @@ def bepaal_afvalcategorie(stofnaam, h_zinnen):
     naam = str(stofnaam).lower()
     h = str(h_zinnen).upper()
     
-    # Categorie 6: Buitengewone risico's (ontplofbaar)
     if any(hx in h for hx in ['H200', 'H201', 'H202', 'H203', 'H204', 'H205']) or 'pikrinezuur' in naam or 'picric' in naam:
         return "Categorie 6: Afvalstoffen met buitengewone risico's (ontplofbaar)"
-    # Categorie 5: Bijzondere afvalstoffen
     if any(term in naam for term in ['kwik', 'mercury', 'batterij', 'accu', 'spuitbus', 'aerosol', 'tl-lamp', 'zware metaal']):
         return "Categorie 5: Bijzondere afval stoffen (kwik, zware metalen, batterijen, spuitbussen)"
-    # Categorie 1: Zuren anorganische stoffen (pH < 7)
+    
     zuren = ['zuur', 'acid', 'hcl', 'hno3', 'h2so4', 'h3po4', 'zoutzuur', 'salpeterzuur', 'zwavelzuur', 'fosforzuur']
     if any(z in naam for z in zuren) and not 'organisch' in naam and not 'acetic' in naam and not 'citric' in naam:
         return "Categorie 1: Zuren anorganische stoffen in oplossing (pH < 7)"
-    # Categorie 2: Alkalische anorganische stoffen (pH > 7)
+    
     basen = ['hydroxide', 'sodium hydroxide', 'kaliumhydroxide', 'ammoniak', 'ammonia', 'natriumhydroxide', 'koh', 'naoh']
     if any(b in naam for b in basen):
         return "Categorie 2: Alkalische anorganische stoffen in oplossing (pH > 7)"
-    # Categorie 4: Halogeen bevattende organische stoffen
+    
     halogeen_termen = ['chloro', 'bromo', 'fluoro', 'iodo', 'chloor', 'broom', 'jood', 'dichloormethaan', 'dichloromethane', 'chloroform', 'trichloorethyleen']
     if any(ht in naam for ht in halogeen_termen):
         return "Categorie 4: Halogeen bevattende organische stoffen"
-    # Categorie 3: Halogeenvrije organische stoffen (standaard)
+    
     return "Categorie 3: Halogeenvrije organische stoffen"
 
 def extract_text_from_pdf(uploaded_file):
@@ -163,17 +162,34 @@ def extract_text_from_pdf(uploaded_file):
     except Exception: pass
     return text
 
-def vind_stoffen_in_tekst(text, complete_stoffen_lijst):
+def vind_stoffen_in_tekst(text, df_chemicalien):
     gevonden_stoffen = []
     text_lower = text.lower()
-    for stof in complete_stoffen_lijst:
-        stof_str = str(stof).strip()
-        if len(stof_str) > 2:
-            pattern = r'\b' + re.escape(stof_str.lower()) + r'\b'
-            if re.search(pattern, text_lower):
-                gevonden_stoffen.append(stof)
-            elif stof_str.lower() == "aceton" and "acetone" in text_lower:
-                gevonden_stoffen.append(stof)
+    
+    # 1. Scannen op stofnaam
+    for _, row in df_chemicalien.iterrows():
+        stof = row.get('SORTEERNAAM NL')
+        if pd.notnull(stof):
+            stof_str = str(stof).strip()
+            if len(stof_str) > 2:
+                pattern = r'\b' + re.escape(stof_str.lower()) + r'\b'
+                if re.search(pattern, text_lower):
+                    gevonden_stoffen.append(stof_str)
+                elif stof_str.lower() == "aceton" and "acetone" in text_lower:
+                    gevonden_stoffen.append(stof_str)
+
+    # 2. Scannen op CAS-nummer
+    cas_patroon = r'\b\d{2,7}-\d{2}-\d\b'
+    gevonden_cas_in_tekst = set(re.findall(cas_patroon, text))
+    
+    if gevonden_cas_in_tekst and 'CAS-NUMMER' in df_chemicalien.columns:
+        for cas in gevonden_cas_in_tekst:
+            match_db = df_chemicalien[df_chemicalien['CAS-NUMMER'].astype(str).str.strip() == cas]
+            for _, row in match_db.iterrows():
+                stof_naam = row.get('SORTEERNAAM NL')
+                if pd.notnull(stof_naam):
+                    gevonden_stoffen.append(str(stof_naam).strip())
+                    
     return list(set(gevonden_stoffen))
 
 def schat_standaard_dampdruk(stofnaam, h_zinnen):
@@ -214,7 +230,8 @@ with tab1:
     if geanalyseerde_tekst:
         st.session_state['protocol_tekst'] = geanalyseerde_tekst 
         if st.button("Analyseer Tekst / Analyze Text", type="primary"):
-            gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, df_stoffen, st.session_state['handmatige_stoffen_data'])
+            # Doorgegeven van de volledige dataframe zodat CAS-nummers uitgelezen kunnen worden
+            gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, df_stoffen)
             if gevonden:
                 st.success(f"Gevonden stoffen / Found substances: {', '.join(gevonden)}")
                 st.session_state['gevonden_stoffen'] = gevonden
@@ -270,19 +287,26 @@ with tab2:
             stof_data = st.session_state['handmatige_stoffen_data'][stof]
             is_handmatig = True
         else:
-            stof_data = df_stoffen[df_stoffen['SORTEERNAAM NL'] == stof].iloc[0]
-            is_handmatig = stof_data.get('is_handmatig', False)
+            match_row = df_stoffen[df_stoffen['SORTEERNAAM NL'] == stof]
+            if not match_row.empty:
+                stof_data = match_row.iloc[0]
+                is_handmatig = stof_data.get('is_handmatig', False)
+            else:
+                stof_data = {}
+                is_handmatig = False
             
-        h_zinnen_db = stof_data.get('H-ZINNEN (TEKST)', 'Geen')
-        cas_nummer = stof_data.get('CAS-NUMMER', 'Onbekend')
-        db_cmr = stof_data.get('CMR', '')
+        h_zinnen_db = stof_data.get('H-ZINNEN (TEKST', 'Geen') if hasattr(stof_data, 'get') else 'Geen'
+        if not h_zinnen_db or h_zinnen_db == 'Geen':
+            h_zinnen_db = stof_data.get('H-ZINNEN (TEKST)', 'Geen') if hasattr(stof_data, 'get') else 'Geen'
+            
+        cas_nummer = stof_data.get('CAS-NUMMER', 'Onbekend') if hasattr(stof_data, 'get') else 'Onbekend'
+        db_cmr = stof_data.get('CMR', '') if hasattr(stof_data, 'get') else ''
         
         is_cmr = check_cmr_status(h_zinnen_db, db_cmr)
         
         geschatte_damp = schat_standaard_dampdruk(stof, h_zinnen_db)
         waarschijnlijk_vast = (geschatte_damp == 0.0) and ("water" not in stof.lower()) and ("buffer" not in stof.lower())
         
-        # Bepaal automatische suggestie voor afvalstroom
         voorgestelde_afval = bepaal_afvalcategorie(stof, h_zinnen_db)
         try:
             default_afval_idx = afval_categorieen.index(voorgestelde_afval)
