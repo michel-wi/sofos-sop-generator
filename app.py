@@ -48,9 +48,11 @@ def init_connection():
 
 supabase_client = init_connection()
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def laad_chemicalien(_client):
     all_data = []
+    
+    # 1. Lees de reguliere stoffen in
     offset = 0
     limit = 1000
     try:
@@ -58,12 +60,27 @@ def laad_chemicalien(_client):
             response = _client.table('chemicalien').select("*").range(offset, offset + limit - 1).execute()
             data = response.data
             if not data: break
+            # Markeer als regulier
+            for row in data:
+                row['is_handmatig'] = False
             all_data.extend(data)
             if len(data) < limit: break
             offset += limit
-        return pd.DataFrame(all_data)
     except Exception:
-        return pd.DataFrame()
+        pass
+        
+    # 2. Lees de handmatige stoffen in
+    try:
+        response_handmatig = _client.table('handmatige_chemicalien').select("*").execute()
+        data_handmatig = response_handmatig.data
+        if data_handmatig:
+            for row in data_handmatig:
+                row['is_handmatig'] = True
+            all_data.extend(data_handmatig)
+    except Exception:
+        pass
+        
+    return pd.DataFrame(all_data)
 
 def bereken_blootstellingsscore(dampspanning, is_vast, hoeveelheid, locatie, ventilatie, duur, frequentie):
     if is_vast: Ei = 0.01 
@@ -123,10 +140,10 @@ def extract_text_from_pdf(uploaded_file):
     except Exception: pass
     return text
 
-def vind_stoffen_in_tekst(text, df):
+def vind_stoffen_in_tekst(text, complete_stoffen_lijst):
     gevonden_stoffen = []
     text_lower = text.lower()
-    for stof in df['SORTEERNAAM NL'].dropna().unique():
+    for stof in complete_stoffen_lijst:
         stof_str = str(stof).strip()
         if len(stof_str) > 2:
             pattern = r'\b' + re.escape(stof_str.lower()) + r'\b'
@@ -136,7 +153,6 @@ def vind_stoffen_in_tekst(text, df):
                 gevonden_stoffen.append(stof)
     return list(set(gevonden_stoffen))
 
-# --- Slimme functie om dampdruk te voorspellen o.b.v LUMC Handleiding ---
 def schat_standaard_dampdruk(stofnaam, h_zinnen):
     naam_lower = stofnaam.lower()
     h_zinnen_str = str(h_zinnen).upper()
@@ -152,11 +168,11 @@ def schat_standaard_dampdruk(stofnaam, h_zinnen):
 df_stoffen = laad_chemicalien(supabase_client)
 
 if df_stoffen.empty:
-    st.error("Databasefout. Controleer je Secrets.")
+    st.error("Databasefout. Controleer je Secrets en verbinding.")
     st.stop()
 
 db_stoffen_lijst = [s for s in df_stoffen['SORTEERNAAM NL'].unique() if pd.notnull(s)]
-complete_stoffen_lijst = sorted(db_stoffen_lijst + list(st.session_state['handmatige_stoffen_data'].keys()))
+complete_stoffen_lijst = sorted(list(set(db_stoffen_lijst + list(st.session_state['handmatige_stoffen_data'].keys()))))
 
 tab1, tab2, tab3 = st.tabs(["📄 NLP Protocol Upload", "📝 Stap 1-3: Invoer / Input", "🖨️ Stap 4: SOP Document"])
 
@@ -175,7 +191,7 @@ with tab1:
     if geanalyseerde_tekst:
         st.session_state['protocol_tekst'] = geanalyseerde_tekst 
         if st.button("Analyseer Tekst / Analyze Text", type="primary"):
-            gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, df_stoffen)
+            gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, complete_stoffen_lijst)
             if gevonden:
                 st.success(f"Gevonden stoffen / Found substances: {', '.join(gevonden)}")
                 st.session_state['gevonden_stoffen'] = gevonden
@@ -207,6 +223,7 @@ with tab2:
                                 "H-ZINNEN (TEKST)": new_h, "CMR": cmr_status
                             }).execute()
                             st.success(f"{new_naam} is succesvol opgeslagen in de database!")
+                            laad_chemicalien.clear() # Clear cache zodat de nieuwe db entry gepakt wordt
                         except Exception:
                             st.warning("Let op: Tabel 'handmatige_chemicalien' bestaat nog niet. Stof is wel tijdelijk toegevoegd.")
                     st.rerun()
@@ -222,7 +239,7 @@ with tab2:
             is_handmatig = True
         else:
             stof_data = df_stoffen[df_stoffen['SORTEERNAAM NL'] == stof].iloc[0]
-            is_handmatig = False
+            is_handmatig = stof_data.get('is_handmatig', False)
             
         h_zinnen_db = stof_data.get('H-ZINNEN (TEKST)', 'Geen')
         cas_nummer = stof_data.get('CAS-NUMMER', 'Onbekend')
@@ -230,9 +247,7 @@ with tab2:
         
         is_cmr = check_cmr_status(h_zinnen_db, db_cmr)
         
-        # Bepaal automatisch de dampdruk-schatting op basis van stofnaam en H-zinnen
         geschatte_damp = schat_standaard_dampdruk(stof, h_zinnen_db)
-        # Check of het waarschijnlijk een vaste stof is (als geschatte damp 0.0 is en het woord 'buffer' of 'water' er niet in zit)
         waarschijnlijk_vast = (geschatte_damp == 0.0) and ("water" not in stof.lower()) and ("buffer" not in stof.lower())
         
         st.markdown(f"### ⚙️ {stof}")
@@ -246,7 +261,6 @@ with tab2:
             st.caption("Controleer de dampdruk in het SDS rubriek 9 of GESTIS. (Check SDS section 9 for exact vapor pressure).")
             dampspanning = st.number_input("Dampdruk / Vapor pressure (hPa)", value=float(geschatte_damp), key=f"damp_{stof}")
         with c2:
-            # 1. Hoeveelheid en soort handeling (Quantity / action)
             h = st.selectbox("Hoeveelheid / Quantity", [
                 ("1. Closed system / Gesloten systeem", 0.0),
                 ("2. Very small quantities (1 g or ml), pipetting, weighing / Zeer klein, pipetteren, wegen", 0.03),
@@ -258,14 +272,12 @@ with tab2:
                 ("8. Mist / Nevel (meer dan 1 kg/liter)", 10.0)
             ], index=1, key=f"h_{stof}")
             
-            # 2. Lokale controle / Ventilatie (Local control measures)
             v = st.selectbox("Ventilatie / Ventilation", [
                 ("1. Work in a fume hood / Werk in een zuurkast", 0.03),
                 ("2. Work with point extraction / Werk met puntafzuiging", 0.3),
                 ("3. Work on the table / Werk op tafel", 1.0)
             ], index=0, key=f"v_{stof}")
             
-            # 3. Duur van handeling (Duration action)
             d = st.selectbox("Tijdsduur / Duration", [
                 ("a. 1 to 30 minutes at a time / 1 tot 30 minuten per keer", 0.06),
                 ("b. 0.5 to 2 hours at a time / 0.5 tot 2 uur per keer", 0.25),
@@ -273,7 +285,6 @@ with tab2:
                 ("d. 4 to 8 hours at a time / 4 tot 8 uur per keer", 1.0)
             ], index=0, key=f"d_{stof}")
             
-            # 4. Frequentie (Frequency of action)
             f = st.selectbox("Frequentie / Frequency", [
                 ("a. Once a year / Een keer per jaar", 0.01),
                 ("b. Once a month / Een keer per maand", 0.05),
