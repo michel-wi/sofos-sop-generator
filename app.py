@@ -145,10 +145,13 @@ def extract_text_from_pdf(uploaded_file):
     except Exception: pass
     return text
 
-def vind_stoffen_in_tekst(text, complete_stoffen_lijst):
+def vind_stoffen_in_tekst(text, df_chemicalien, extra_handmatige_dict):
     gevonden_stoffen = []
     text_lower = text.lower()
-    for stof in complete_stoffen_lijst:
+    
+    # 1. Zoek op stofnamen
+    alle_stofnamen = list(df_chemicalien['SORTEERNAAM NL'].dropna().unique()) + list(extra_handmatige_dict.keys())
+    for stof in alle_stofnamen:
         stof_str = str(stof).strip()
         if len(stof_str) > 2:
             pattern = r'\b' + re.escape(stof_str.lower()) + r'\b'
@@ -156,6 +159,24 @@ def vind_stoffen_in_tekst(text, complete_stoffen_lijst):
                 gevonden_stoffen.append(stof)
             elif stof_str.lower() == "aceton" and "acetone" in text_lower:
                 gevonden_stoffen.append(stof)
+
+    # 2. Zoek op CAS-nummers in de tekst (format: 2-7 cijfers, streepje, 2 cijfers, streepje, 1 cijfer)
+    cas_patroon = r'\b\d{2,7}-\d{2}-\d\b'
+    gevonden_cas_in_tekst = set(re.findall(cas_patroon, text))
+    
+    if gevonden_cas_in_tekst:
+        # Match met de database
+        for cas in gevonden_cas_in_tekst:
+            # Check reguliere database
+            match_db = df_chemicalien[df_chemicalien['CAS-NUMMER'].astype(str).str.strip() == cas]
+            if not match_db.empty:
+                gevonden_stoffen.append(match_db.iloc[0]['SORTEERNAAM NL'])
+            
+            # Check handmatige stoffen
+            for naam, data in extra_handmatige_dict.items():
+                if str(data.get('CAS-NUMMER', '')).strip() == cas:
+                    gevonden_stoffen.append(naam)
+                    
     return list(set(gevonden_stoffen))
 
 def schat_standaard_dampdruk(stofnaam, h_zinnen):
@@ -196,7 +217,7 @@ with tab1:
     if geanalyseerde_tekst:
         st.session_state['protocol_tekst'] = geanalyseerde_tekst 
         if st.button("Analyseer Tekst / Analyze Text", type="primary"):
-            gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, complete_stoffen_lijst)
+            gevonden = vind_stoffen_in_tekst(geanalyseerde_tekst, df_stoffen, st.session_state['handmatige_stoffen_data'])
             if gevonden:
                 st.success(f"Gevonden stoffen / Found substances: {', '.join(gevonden)}")
                 st.session_state['gevonden_stoffen'] = gevonden
