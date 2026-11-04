@@ -46,26 +46,32 @@ if not check_password():
     st.stop()
 
 # --- 2. Database & Rekenlogica ---
-@st.cache_data(ttl=600)
-def laad_chemicalien():
+# OPLOSSING: Gebruik cache_resource voor de live verbinding (die niet geserialiseerd kan worden)
+@st.cache_resource
+def init_connection():
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(url, key)
-    
+    return create_client(url, key)
+
+supabase_client = init_connection()
+
+# OPLOSSING: Gebruik cache_data alleen voor de pure tabel data
+@st.cache_data(ttl=600)
+def laad_chemicalien(_client):
     all_data = []
     offset = 0
     limit = 1000
     try:
         while True:
-            response = supabase.table('chemicalien').select("*").range(offset, offset + limit - 1).execute()
+            response = _client.table('chemicalien').select("*").range(offset, offset + limit - 1).execute()
             data = response.data
             if not data: break
             all_data.extend(data)
             if len(data) < limit: break
             offset += limit
-        return pd.DataFrame(all_data), supabase
+        return pd.DataFrame(all_data)
     except Exception:
-        return pd.DataFrame(), None
+        return pd.DataFrame()
 
 def bereken_blootstellingsscore(dampspanning, is_vast, hoeveelheid, locatie, ventilatie, duur, frequentie):
     if is_vast: Ei = 0.01 
@@ -142,7 +148,8 @@ def vind_stoffen_in_tekst(text, df):
     return list(set(gevonden_stoffen))
 
 # --- 3. Interface ---
-df_stoffen, supabase_client = laad_chemicalien()
+df_stoffen = laad_chemicalien(supabase_client)
+
 if df_stoffen.empty:
     st.error("Databasefout. Controleer je Secrets.")
     st.stop()
