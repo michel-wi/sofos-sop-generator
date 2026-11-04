@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 import PyPDF2
 
-st.set_page_config(page_title="SOFOS SOP Generator", layout="wide")
+st.set_page_config(page_title="WI SOP Generator", layout="wide")
 
 st.markdown("""
     <style>
@@ -28,7 +28,7 @@ def check_password():
         st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        st.header("SOFOS - Login")
+        st.header("WI SOP - Login")
         st.text_input("Gebruikersnaam", key="username")
         st.text_input("Wachtwoord", type="password", key="password", on_change=password_entered)
         return False
