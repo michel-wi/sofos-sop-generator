@@ -255,6 +255,11 @@ with tab1:
     st.markdown("---")
     st.subheader("Stoffen Beheren & Selecteren / Manage & Select Substances")
     
+    # 1. Eerst het keuzemenu tonen
+    standaard_stoffen = st.session_state.get('gevonden_stoffen', [])
+    gekozen_stoffen = st.multiselect("Stoffen voor dit protocol / Substances for this protocol:", complete_stoffen_lijst, default=[s for s in standaard_stoffen if s in complete_stoffen_lijst])
+    
+    # 2. Daarna pas het handmatig toevoegen veld
     with st.expander("➕ Stof ontbreekt? Voeg handmatig toe / Substance missing? Add manually"):
         st.info("Let op: Raadpleeg altijd het SDS van de leverancier.")
         with st.form("handmatige_stof_form"):
@@ -280,9 +285,6 @@ with tab1:
                         except Exception:
                             st.warning("Let op: Tabel 'handmatige_chemicalien' bestaat nog niet. Stof is wel tijdelijk toegevoegd.")
                     st.rerun()
-
-    standaard_stoffen = st.session_state.get('gevonden_stoffen', [])
-    gekozen_stoffen = st.multiselect("Stoffen voor dit protocol / Substances for this protocol:", complete_stoffen_lijst, default=[s for s in standaard_stoffen if s in complete_stoffen_lijst])
 
 with tab2:
     st.header("Stap 1-3: Basisgegevens & STOP-strategie / Basic Data & STOP Strategy")
