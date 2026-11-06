@@ -4,6 +4,7 @@ from supabase import create_client, Client
 import re
 from datetime import datetime
 import PyPDF2
+import requests
 
 st.set_page_config(page_title="WI SOP Generator", layout="wide")
 
@@ -128,12 +129,41 @@ def bepaal_risico_kleur(coshh, exp_klasse, is_cmr):
         return "Laag (Groen / Low - Green)"
     return "Midden (Oranje / Medium - Orange)"
 
-def bepaal_afvalcategorie(stofnaam, h_zinnen):
+@st.cache_data(ttl=86400) # Cache voorkomt overbelasting van de API
+def bepaal_afvalcategorie(stofnaam, h_zinnen, cas_nummer):
     naam = str(stofnaam).lower()
     h = str(h_zinnen).upper()
     
-    if any(hx in h for hx in ['H200', 'H201', 'H202', 'H203', 'H204', 'H205']) or 'pikrinezuur' in naam or 'picric' in naam:
-        return "Categorie 6: Afvalstoffen met buitengewone risico's (ontplofbaar)"
+    # 1. Categorie 6 (Explosiegevaar primeert altijd over de rest)
+    explosief_hzinnen = ['H200', 'H201', 'H202', 'H203', 'H204', 'H205', 'H240', 'H241']
+    if any(hx in h for hx in explosief_hzinnen) or any(x in naam for x in ['pikrinezuur', 'picric', 'azide', 'trinitro', 'perchloraat', 'peroxide']):
+        return "Categorie 6: Afvalstoffen met buitengewone risico's (ontplofbaar zoals pikrinezuur)"
+    
+    # 2. Hybride: Probeer foutloze atoom-analyse via PubChem API (Voor Cat 3, 4 en 5)
+    if cas_nummer and str(cas_nummer).strip() not in ['Onbekend', '', 'nan']:
+        cas_clean = str(cas_nummer).strip()
+        url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{cas_clean}/property/MolecularFormula/JSON"
+        try:
+            response = requests.get(url, timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                formule = data['PropertyTable']['Properties'][0]['MolecularFormula']
+                elementen = set(re.findall(r'[A-Z][a-z]?', formule))
+                
+                zware_metalen = {'Hg', 'Pb', 'Cd', 'Cr', 'As', 'Ag', 'Cu', 'Ni', 'Co', 'Zn', 'Ba', 'U'}
+                if elementen.intersection(zware_metalen):
+                    return "Categorie 5: Bijzondere afval stoffen (kwik, zware metalen, batterijen, spuitbussen)"
+                
+                if 'C' in elementen and 'H' in elementen:
+                    halogenen = {'F', 'Cl', 'Br', 'I'}
+                    if elementen.intersection(halogenen):
+                        return "Categorie 4: Halogeen bevattende organische stoffen"
+                    else:
+                        return "Categorie 3: Halogeenvrije organische stoffen"
+        except Exception:
+            pass # Ga bij een API fout of onbekende data door naar de fallback
+            
+    # 3. Fallback: Tekst en H-zinnen (Oude methode voor Cat 1, 2 en noodgevallen)
     if any(term in naam for term in ['kwik', 'mercury', 'batterij', 'accu', 'spuitbus', 'aerosol', 'tl-lamp', 'zware metaal']):
         return "Categorie 5: Bijzondere afval stoffen (kwik, zware metalen, batterijen, spuitbussen)"
     
@@ -148,8 +178,13 @@ def bepaal_afvalcategorie(stofnaam, h_zinnen):
     halogeen_termen = ['chloro', 'bromo', 'fluoro', 'iodo', 'chloor', 'broom', 'jood', 'dichloormethaan', 'dichloromethane', 'chloroform', 'trichloorethyleen']
     if any(ht in naam for ht in halogeen_termen):
         return "Categorie 4: Halogeen bevattende organische stoffen"
+        
+    organisch_termen = ['ethanol', 'methanol', 'acetone', 'aceton', 'isopropanol', 'butanol', 'ethylde', 'hexane', 'heptaan', 'tolueen', 'xyleen', 'dmso', 'acetonitrile', 'ethylacetate']
+    if any(ot in naam for ot in organisch_termen) or 'h225' in h or 'h226' in h:
+        return "Categorie 3: Halogeenvrije organische stoffen"
     
-    return "Categorie 3: Halogeenvrije organische stoffen"
+    # 4. Final Fallback
+    return "Categorie 7: Onbekend! overleg met Dylan"
 
 def extract_text_from_pdf(uploaded_file):
     text = ""
@@ -283,7 +318,8 @@ with tab2:
         "Categorie 3: Halogeenvrije organische stoffen",
         "Categorie 4: Halogeen bevattende organische stoffen",
         "Categorie 5: Bijzondere afval stoffen (kwik, zware metalen, batterijen, spuitbussen)",
-        "Categorie 6: Afvalstoffen met buitengewone risico's (ontplofbaar zoals pikrinezuur)"
+        "Categorie 6: Afvalstoffen met buitengewone risico's (ontplofbaar zoals pikrinezuur)",
+        "Categorie 7: Onbekend! overleg met Dylan"
     ]
 
     if not gekozen_stoffen:
@@ -311,11 +347,12 @@ with tab2:
         
         is_cmr = check_cmr_status(h_zinnen_db, db_cmr)
         
-        voorgestelde_afval = bepaal_afvalcategorie(stof, h_zinnen_db)
+        # Roep de nieuwe hybride functie aan met CAS nummer als extra argument
+        voorgestelde_afval = bepaal_afvalcategorie(stof, h_zinnen_db, cas_nummer)
         try:
             default_afval_idx = afval_categorieen.index(voorgestelde_afval)
         except ValueError:
-            default_afval_idx = 2
+            default_afval_idx = 6 # Val terug op Categorie 7
         
         st.markdown(f"### ⚙️ {stof}")
         if is_handmatig: st.caption("*(Handmatig toegevoegde stof / Manually added substance)*")
