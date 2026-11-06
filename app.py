@@ -129,17 +129,15 @@ def bepaal_risico_kleur(coshh, exp_klasse, is_cmr):
         return "Laag (Groen / Low - Green)"
     return "Midden (Oranje / Medium - Orange)"
 
-@st.cache_data(ttl=86400) # Cache voorkomt overbelasting van de API
+@st.cache_data(ttl=86400)
 def bepaal_afvalcategorie(stofnaam, h_zinnen, cas_nummer):
     naam = str(stofnaam).lower()
     h = str(h_zinnen).upper()
     
-    # 1. Categorie 6 (Explosiegevaar primeert altijd over de rest)
     explosief_hzinnen = ['H200', 'H201', 'H202', 'H203', 'H204', 'H205', 'H240', 'H241']
     if any(hx in h for hx in explosief_hzinnen) or any(x in naam for x in ['pikrinezuur', 'picric', 'azide', 'trinitro', 'perchloraat', 'peroxide']):
         return "Categorie 6: Afvalstoffen met buitengewone risico's (ontplofbaar zoals pikrinezuur)"
     
-    # 2. Hybride: Probeer foutloze atoom-analyse via PubChem API (Voor Cat 3, 4 en 5)
     if cas_nummer and str(cas_nummer).strip() not in ['Onbekend', '', 'nan']:
         cas_clean = str(cas_nummer).strip()
         url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{cas_clean}/property/MolecularFormula/JSON"
@@ -161,9 +159,8 @@ def bepaal_afvalcategorie(stofnaam, h_zinnen, cas_nummer):
                     else:
                         return "Categorie 3: Halogeenvrije organische stoffen"
         except Exception:
-            pass # Ga bij een API fout of onbekende data door naar de fallback
+            pass 
             
-    # 3. Fallback: Tekst en H-zinnen (Oude methode voor Cat 1, 2 en noodgevallen)
     if any(term in naam for term in ['kwik', 'mercury', 'batterij', 'accu', 'spuitbus', 'aerosol', 'tl-lamp', 'zware metaal']):
         return "Categorie 5: Bijzondere afval stoffen (kwik, zware metalen, batterijen, spuitbussen)"
     
@@ -183,7 +180,6 @@ def bepaal_afvalcategorie(stofnaam, h_zinnen, cas_nummer):
     if any(ot in naam for ot in organisch_termen) or 'h225' in h or 'h226' in h:
         return "Categorie 3: Halogeenvrije organische stoffen"
     
-    # 4. Final Fallback
     return "Categorie 7: Onbekend! overleg met Dylan"
 
 def extract_text_from_pdf(uploaded_file):
@@ -283,29 +279,67 @@ with tab1:
     
     with st.expander("➕ Stof ontbreekt? Voeg handmatig toe / Substance missing? Add manually"):
         st.info("Let op: Raadpleeg altijd het SDS van de leverancier.")
-        with st.form("handmatige_stof_form"):
-            new_naam = st.text_input("Stofnaam / Substance name")
-            new_cas = st.text_input("CAS-nummer / CAS number")
-            new_h = st.text_input("H-zinnen (bijv. H225, H319) / H-statements")
-            new_cmr = st.checkbox("Is dit een CMR-stof? / Is this a CMR substance?")
+        
+        # Dynamisch formulier zonder st.form voor real-time reacties
+        new_naam = st.text_input("Stofnaam / Afkorting (Substance name)")
+        is_synoniem = st.checkbox("Other name (Vink aan als dit een synoniem of afkorting is)")
+        
+        final_orig = ""
+        final_cas = ""
+        final_h = ""
+        final_cmr = "Uitgevinkt"
+        
+        if is_synoniem:
+            koppel_keuze = st.selectbox("Koppel aan bestaande stof (original name):", ["-- Handmatig invoeren --"] + db_stoffen_lijst)
             
-            if st.form_submit_button("Toevoegen aan database / Add to database"):
-                if new_naam:
-                    cmr_status = "Aangevinkt" if new_cmr else "Uitgevinkt"
-                    st.session_state['handmatige_stoffen_data'][new_naam] = {
-                        'CAS-NUMMER': new_cas, 'H-ZINNEN (TEKST)': new_h, 'CMR': cmr_status, 'is_handmatig': True
-                    }
-                    if supabase_client:
-                        try:
-                            supabase_client.table('handmatige_chemicalien').insert({
-                                "SORTEERNAAM NL": new_naam, "CAS-NUMMER": new_cas, 
-                                "H-ZINNEN (TEKST)": new_h, "CMR": cmr_status
-                            }).execute()
-                            st.success(f"{new_naam} is succesvol opgeslagen in de database!")
-                            laad_chemicalien.clear()
-                        except Exception:
-                            st.warning("Let op: Tabel 'handmatige_chemicalien' bestaat nog niet. Stof is wel tijdelijk toegevoegd.")
-                    st.rerun()
+            if koppel_keuze != "-- Handmatig invoeren --":
+                match_row = df_stoffen[df_stoffen['SORTEERNAAM NL'] == koppel_keuze].iloc[0]
+                
+                final_orig = koppel_keuze
+                final_cas = str(match_row.get('CAS-NUMMER', ''))
+                final_h = str(match_row.get('H-ZINNEN (TEKST)', ''))
+                is_cmr_calc = check_cmr_status(final_h, match_row.get('CMR', ''))
+                final_cmr = "Aangevinkt" if is_cmr_calc else "Uitgevinkt"
+                
+                st.text_input("Original name (Oorspronkelijke naam)", value=final_orig, disabled=True)
+                st.text_input("CAS-nummer", value=final_cas, disabled=True)
+                st.text_input("H-zinnen", value=final_h, disabled=True)
+                st.checkbox("Is dit een CMR-stof?", value=is_cmr_calc, disabled=True)
+            else:
+                final_orig = st.text_input("Original name (Oorspronkelijke naam)")
+                final_cas = st.text_input("CAS-nummer / CAS number")
+                final_h = st.text_input("H-zinnen (bijv. H225, H319) / H-statements")
+                user_cmr = st.checkbox("Is dit een CMR-stof? / Is this a CMR substance?")
+                final_cmr = "Aangevinkt" if user_cmr else "Uitgevinkt"
+        else:
+            final_cas = st.text_input("CAS-nummer / CAS number")
+            final_h = st.text_input("H-zinnen (bijv. H225, H319) / H-statements")
+            user_cmr = st.checkbox("Is dit een CMR-stof? / Is this a CMR substance?")
+            final_cmr = "Aangevinkt" if user_cmr else "Uitgevinkt"
+            
+        if st.button("Toevoegen aan database / Add to database"):
+            if new_naam:
+                st.session_state['handmatige_stoffen_data'][new_naam] = {
+                    'CAS-NUMMER': final_cas, 
+                    'H-ZINNEN (TEKST)': final_h, 
+                    'CMR': final_cmr, 
+                    'is_handmatig': True,
+                    'original_name': final_orig
+                }
+                if supabase_client:
+                    try:
+                        supabase_client.table('handmatige_chemicalien').insert({
+                            "SORTEERNAAM NL": new_naam, 
+                            "CAS-NUMMER": final_cas, 
+                            "H-ZINNEN (TEKST)": final_h, 
+                            "CMR": final_cmr,
+                            "original_name": final_orig
+                        }).execute()
+                        st.success(f"{new_naam} is succesvol opgeslagen in de database!")
+                        laad_chemicalien.clear()
+                    except Exception:
+                        st.warning("Let op: Tabel 'handmatige_chemicalien' mist mogelijk nog de kolom 'original_name'. Stof is lokaal toegevoegd.")
+                st.rerun()
 
 with tab2:
     st.header("Stap 1-3: Basisgegevens & STOP-strategie / Basic Data & STOP Strategy")
@@ -337,6 +371,13 @@ with tab2:
             else:
                 stof_data = {}
                 is_handmatig = False
+                
+        # Ophalen van original_name en bepalen van de display naam
+        orig_name = stof_data.get('original_name', '')
+        if pd.isna(orig_name) or str(orig_name).strip() == '' or str(orig_name).strip().lower() == 'nan':
+            display_naam = stof
+        else:
+            display_naam = f"{stof} ({str(orig_name).strip()})"
             
         h_zinnen_db = stof_data.get('H-ZINNEN (TEKST', 'Geen') if hasattr(stof_data, 'get') else 'Geen'
         if not h_zinnen_db or h_zinnen_db == 'Geen':
@@ -347,14 +388,13 @@ with tab2:
         
         is_cmr = check_cmr_status(h_zinnen_db, db_cmr)
         
-        # Roep de nieuwe hybride functie aan met CAS nummer als extra argument
         voorgestelde_afval = bepaal_afvalcategorie(stof, h_zinnen_db, cas_nummer)
         try:
             default_afval_idx = afval_categorieen.index(voorgestelde_afval)
         except ValueError:
-            default_afval_idx = 6 # Val terug op Categorie 7
+            default_afval_idx = 6
         
-        st.markdown(f"### ⚙️ {stof}")
+        st.markdown(f"### ⚙️ {display_naam}")
         if is_handmatig: st.caption("*(Handmatig toegevoegde stof / Manually added substance)*")
         if is_cmr: st.error("⚠️ **Let op / Notice:** Deze stof is herkend als **CMR-stof / CMR Substance**!")
         st.info(f"**CAS:** {cas_nummer} | **H-zinnen / H-statements:** {h_zinnen_db}")
@@ -407,6 +447,7 @@ with tab2:
         
         st.divider()
         beoordelingen[stof] = {
+            'display_naam': display_naam,
             'cas': cas_nummer, 'h_zinnen': h_zinnen_db, 'damp': dampspanning, 'vast': is_vast,
             'h_val': h, 'v_val': v, 'd_val': d, 'f_val': f, 'is_cmr': is_cmr,
             'sub': substitutie, 'tech': technisch, 'org': organisatorisch, 'pbm': pbm,
@@ -421,8 +462,9 @@ with tab3:
     if 'protocol_tekst' in st.session_state and st.session_state['protocol_tekst']:
         protocol_geannoteerd = st.session_state['protocol_tekst'].replace('\n', '\n\n')
         for stof in gekozen_stoffen:
+            display_naam = beoordelingen[stof]['display_naam']
             patroon = re.compile(re.escape(stof), re.IGNORECASE)
-            protocol_geannoteerd = patroon.sub(f"**🧪 {stof}**", protocol_geannoteerd)
+            protocol_geannoteerd = patroon.sub(f"**🧪 {display_naam}**", protocol_geannoteerd)
         st.markdown(protocol_geannoteerd)
     else: st.markdown("*Geen protocol geüpload. / No protocol uploaded.*")
     
@@ -432,11 +474,12 @@ with tab3:
         
     for index, stof in enumerate(gekozen_stoffen):
         b = beoordelingen[stof]
+        display_naam = b['display_naam']
         Ei, score_EM, exp_klasse = bereken_blootstellingsscore(b['damp'], b['vast'], b['h_val'][1], 1, b['v_val'][1], b['d_val'][1], b['f_val'][1])
         coshh = bereken_coshh_klasse(b['h_zinnen'])
         risico_kleur = bepaal_risico_kleur(coshh, exp_klasse, b['is_cmr'])
         
-        st.markdown(f"#### 2.{index+1} {stof} (CAS: {b['cas']})")
+        st.markdown(f"#### 2.{index+1} {display_naam} (CAS: {b['cas']})")
         if b.get('is_handmatig'):
             st.info("ℹ️ **Advies / Notice:** Deze stof is handmatig toegevoegd. Raadpleeg altijd het Veiligheidsinformatieblad (SDS) van de leverancier. Indien deze stof veel gebruikt wordt, stuur dan een e-mail naar *Afdeling Veiligheid en Milieu@Lumc.nl* om deze aan de centrale databank toe te voegen.")
         if b['is_cmr']:
